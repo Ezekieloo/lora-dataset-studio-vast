@@ -66,7 +66,9 @@ say "services"
 wait_for 600 "studio answers on loopback :15050" docker exec "$NAME" curl -sf http://127.0.0.1:15050/api/health
 wait_for 600 "ComfyUI answers on :18188"       docker exec "$NAME" curl -sf http://127.0.0.1:18188/system_stats
 wait_for 300 "Ollama answers on :11434"        docker exec "$NAME" curl -sf http://127.0.0.1:11434/api/version
-inside 'supervisorctl status'
+# exit 3 = some image service is not running (jupyter/syncthing are off in CI)
+inside 'supervisorctl status' || true
+inside 'supervisorctl status lds lds-ollama comfyui' || fail "a studio service is not running"
 done_group
 
 say "Caddy login in front of the studio"
