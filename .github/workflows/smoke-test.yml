@@ -1,0 +1,67 @@
+name: smoke-test
+
+# Boots the real vastai/comfy image with provision.sh on a CPU-only runner: an empty
+# volume first, then a brand-new container on the same volume. GPU-specific parts
+# (CUDA torch builds, training on a GPU) cannot be exercised here.
+
+on:
+  push:
+    branches: [main]
+    paths: ['provision.sh', 'tests/**', '.github/workflows/smoke-test.yml']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Image to test'
+        default: 'vastai/comfy:v0.41.0-cuda-12.9-py312'
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      IMAGE: ${{ inputs.image || 'vastai/comfy:v0.41.0-cuda-12.9-py312' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint
+        run: |
+          shellcheck -x provision.sh tests/smoke.sh
+
+      - name: Make room on the runner
+        run: |
+          df -h / /mnt
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+                      /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost
+          sudo docker image prune -af >/dev/null
+          # Docker's images and the test volume go to the larger temporary disk.
+          sudo systemctl stop docker
+          sudo mkdir -p /mnt/docker
+          echo '{"data-root": "/mnt/docker"}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl start docker
+          df -h / /mnt
+
+      - name: Pull ${{ env.IMAGE }}
+        run: docker pull "$IMAGE"
+
+      - name: First boot (empty volume)
+        run: tests/smoke.sh first
+
+      - name: Second boot (same volume, new container)
+        run: tests/smoke.sh second
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          for c in lds-smoke-second lds-smoke-first; do
+            docker inspect "$c" >/dev/null 2>&1 || continue
+            echo "===== $c: docker logs (tail)"; docker logs "$c" 2>&1 | tail -300
+            echo "===== $c: portal logs"
+            docker exec "$c" bash -c 'for f in /var/log/portal/*.log; do echo "--- $f"; tail -80 "$f"; done' || true
+            break
+          done
+          df -h / /mnt

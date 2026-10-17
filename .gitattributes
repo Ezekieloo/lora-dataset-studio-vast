@@ -1,0 +1,3 @@
+# Vast runs these on Linux: never let a Windows checkout turn them into CRLF.
+* text=auto eol=lf
+*.sh text eol=lf
