@@ -210,7 +210,7 @@ Wpisuj je w **Jupyter Terminal** (kafelek w portalu instancji):
 |---|---|
 | Kafelek studia nie działa (błąd 502 albo pusta strona) | Instalacja jeszcze trwa. Sprawdź logi w portalu albo `lds-status` |
 | W logach jest „Provisioning failed” | Przeczytaj ostatnie linie z `[lds-vast] ERROR`. Często to chwilowy błąd sieci: zrestartuj instancję (instalacja ruszy ponownie) albo uruchom `lds-reprovision` |
-| Brak kafelka „LoRA Dataset Studio” | W szablonie brakuje wpisu w `PORTAL_CONFIG` albo portu `5050`. Skrypt sam dopisuje wpis do portalu, ale port musi być w szablonie. Bez portu działa tylko link Cloudflare |
+| Brak kafelka „LoRA Dataset Studio” albo kafelek się nie otwiera | Sprawdź szablon. Port `5050` (`-p 5050:5050`) jest **obowiązkowy**: bez niego Vast nie wystawi studia, nawet przez link Cloudflare. Brakujący wpis w `PORTAL_CONFIG` skrypt dopisze sam |
 | Studio pokazuje „nodes missing” po instalacji węzłów | `comfy-restart` |
 | Instalacja wtyczki odrzucona („plugin admin token”) | `lds-token` i wklej wynik na stronie Plugins |
 | Na RTX 5090 trening kończy się błędem CUDA („no kernel image”) | Sterownik hosta jest za stary. Wybierz maszynę z *Max CUDA* ≥ 13.0 |

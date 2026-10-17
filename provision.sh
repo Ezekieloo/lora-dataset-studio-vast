@@ -406,7 +406,12 @@ EOF
 # port $LDS_EXTERNAL_PORT (with Vast's login) in front of the loopback-only app. The
 # template's PORTAL_CONFIG should carry it; add it here if it does not.
 ensure_portal_entry() {
-    local yaml=/etc/portal.yaml py=/opt/portal-aio/venv/bin/python
+    local yaml=/etc/portal.yaml py=/opt/portal-aio/venv/bin/python port_var=VAST_TCP_PORT_$LDS_EXTERNAL_PORT
+    # Caddy only serves ports Vast actually published, and the Cloudflare link goes
+    # through that same Caddy port - without it the studio is unreachable.
+    if [[ -z ${!port_var:-} ]]; then
+        warn "port $LDS_EXTERNAL_PORT is not published: add '-p $LDS_EXTERNAL_PORT:$LDS_EXTERNAL_PORT' to the template's Docker options, otherwise the studio cannot be opened"
+    fi
     [[ -s $yaml && -x $py ]] || { warn "no /etc/portal.yaml - cannot check the portal entry"; return 0; }
     grep -q "$PORTAL_NAME" "$yaml" && return 0
     warn "PORTAL_CONFIG has no '$PORTAL_NAME' entry - adding it to $yaml"
@@ -426,9 +431,6 @@ os.replace(tmp, path)
 PY
     supervisorctl restart caddy >/dev/null 2>&1 || true
     supervisorctl restart instance_portal tunnel_manager >/dev/null 2>&1 || true
-    if [[ -z ${VAST_TCP_PORT_5050:-} ]]; then
-        warn "port $LDS_EXTERNAL_PORT is not published (-p $LDS_EXTERNAL_PORT:$LDS_EXTERNAL_PORT missing in the template): use the Cloudflare link from the Instance Portal"
-    fi
 }
 
 # ---- 9. helper commands --------------------------------------------------------------

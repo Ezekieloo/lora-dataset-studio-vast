@@ -47,6 +47,7 @@ docker run -d --name "$NAME" \
     -e PORTAL_CONFIG="localhost:1111:11111:/:Instance Portal|localhost:8188:18188:/:ComfyUI|localhost:5050:15050:/:LoRA Dataset Studio" \
     -e COMFYUI_ARGS="--disable-auto-launch --port 18188 --enable-cors-header --cpu" \
     -e LDS_AITK_CPU=1 \
+    -e VAST_TCP_PORT_1111=1111 -e VAST_TCP_PORT_8188=8188 -e VAST_TCP_PORT_5050=5050 \
     -p 127.0.0.1:5050:5050 \
     "$IMAGE" >/dev/null
 started=$SECONDS
