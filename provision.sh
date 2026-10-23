@@ -694,10 +694,17 @@ def describe(state):
     return state.get('state') or '?'
 
 
+def restart_comfyui():
+    log('new ComfyUI nodes - installing their requirements and restarting ComfyUI')
+    subprocess.call([os.path.join(os.environ.get('LDS_KIT', '/workspace/.lds'), 'bin', 'comfy-restart')])
+
+
 def wait_until_done(actions, hours=10):
     deadline = time.time() + hours * 3600
     last_report = 0
     seen = {}
+    packs = [a for a in actions if a in NODE_PACKS]
+    restarted = not packs
     while True:
         _, body = call('GET', '/api/setup/install-all/status?actions=' + ','.join(actions))
         statuses = (body or {}).get('statuses') or {}
@@ -707,6 +714,12 @@ def wait_until_done(actions, hours=10):
             if state != seen.get(action) and state not in ACTIVE:
                 log('%s: %s' % (action, state))
             seen[action] = state
+        # Node packs take seconds, the weights can take an hour: restart ComfyUI as
+        # soon as the packs are in, so the engines do not wait for every download.
+        if not restarted and not any(a in busy for a in packs):
+            restarted = True
+            if any((statuses.get(a) or {}).get('state') == 'success' for a in packs):
+                restart_comfyui()
         if not busy or time.time() > deadline:
             return statuses
         if time.time() - last_report > 120:
@@ -758,9 +771,6 @@ def main():
             failed.append(action)
             for line in (state.get('log') or [])[-4:]:
                 log('  %s | %s' % (action, line))
-    if any(a in NODE_PACKS and (statuses.get(a) or {}).get('state') == 'success' for a in actions):
-        log('new ComfyUI nodes - installing their requirements and restarting ComfyUI')
-        subprocess.call([os.path.join(os.environ.get('LDS_KIT', '/workspace/.lds'), 'bin', 'comfy-restart')])
     if failed:
         log('not installed: %s' % ', '.join(failed))
         joined = ' '.join(' '.join((statuses.get(a) or {}).get('log') or []) for a in failed).lower()
