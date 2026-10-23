@@ -676,14 +676,28 @@ def queue_everything(mode, started):
         if not caps.get(tool):
             start(tool, started)
 
-    # 4. every Test Studio family the studio knows, missing files only
-    if mode == 'all':
-        code, body = call('GET', '/api/comfy/trained-image-models', timeout=180)
-        if code != 200:
-            log('could not list the Test Studio models: %s' % error_of(code, body))
-        for family in (body or {}).get('families') or []:
-            for action in family.get('install_actions') or []:
-                start(action, started)
+
+def queue_test_studio(started):
+    """Every Test Studio family the studio knows, missing files only.
+
+    Queued as a second wave, after the engines: some of these files share their
+    name and folder with an engine's file (Anima's VAE is the same
+    vae/qwen_image_vae.safetensors as Krea 2 Edit's), and two downloads writing one
+    file at once break each other. For the same reason no two actions in this
+    wave may target the same file name."""
+    code, body = call('GET', '/api/comfy/trained-image-models', timeout=180)
+    if code != 200:
+        log('could not list the Test Studio models: %s' % error_of(code, body))
+    names = set()
+    for family in (body or {}).get('families') or []:
+        files = {d.get('action'): d.get('filename') for d in family.get('downloads') or []}
+        for action in family.get('install_actions') or []:
+            name = files.get(action)
+            if name and name in names:
+                log('%s: %s is already queued by another family' % (action, name))
+                continue
+            names.add(name)
+            start(action, started)
 
 
 def describe(state):
@@ -741,6 +755,7 @@ def main():
     if _dry_run:
         started = []
         queue_everything(mode, started)
+        queue_test_studio(started)
         log('"all" would fetch %d item(s): %s' % (len(started), ', '.join(started) or 'nothing'))
         return 0
     if not wait_for(API + '/api/health', 1800):
@@ -755,14 +770,23 @@ def main():
         return 1
     _csrf = body['csrf_token']
 
-    started = []
-    queue_everything(mode, started)
-    actions = list(dict.fromkeys(started))
+    actions, statuses = [], {}
+    waves = [queue_everything] + ([queue_test_studio] if mode == 'all' else [])
+    for wave in waves:
+        started = []
+        if wave is queue_everything:
+            wave(mode, started)
+        else:
+            wave(started)
+        batch = [a for a in dict.fromkeys(started) if a not in actions]
+        if not batch:
+            continue
+        log('downloading/installing %d item(s): %s' % (len(batch), ', '.join(batch)))
+        statuses.update(wait_until_done(batch))
+        actions.extend(batch)
     if not actions:
         log('every model the studio lists for "%s" is already on the volume' % mode)
         return 0
-    log('downloading/installing %d item(s): %s' % (len(actions), ', '.join(actions)))
-    statuses = wait_until_done(actions)
 
     failed = []
     for action in actions:
