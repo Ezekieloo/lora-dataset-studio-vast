@@ -47,6 +47,7 @@ docker run -d --name "$NAME" \
     -e PORTAL_CONFIG="localhost:1111:11111:/:Instance Portal|localhost:8188:18188:/:ComfyUI|localhost:5050:15050:/:LoRA Dataset Studio" \
     -e COMFYUI_ARGS="--disable-auto-launch --port 18188 --enable-cors-header --cpu" \
     -e LDS_AITK_CPU=1 \
+    -e LDS_MODELS=klein_vae,lanpaint_nodes \
     -e VAST_TCP_PORT_1111=1111 -e VAST_TCP_PORT_8188=8188 -e VAST_TCP_PORT_5050=5050 \
     -p 127.0.0.1:5050:5050 \
     "$IMAGE" >/dev/null
@@ -118,6 +119,23 @@ for key in ("comfyui", "aitoolkit", "ollama"):
 PY
 inside 'lds-status' || true
 test -n "$(inside 'lds-token')" || fail "lds-token printed nothing"
+done_group
+
+say "automatic models through the studio's own Setup installer"
+# CI fetches a small subset (LDS_MODELS above); real instances default to "all".
+wait_for 1200 "lds-models job finished" \
+    docker exec "$NAME" bash -c 'supervisorctl status lds-models | grep -qE "EXITED|FATAL"'
+docker logs "$NAME" 2>&1 | grep '\[lds-models\]' | tail -20
+docker logs "$NAME" 2>&1 | grep -q '\[lds-models\].*all models are ready' \
+    || fail "lds-models did not finish cleanly"
+inside 'test -s /workspace/ComfyUI/models/vae/flux2-vae.safetensors' || fail "klein_vae was not downloaded"
+inside 'test -d /workspace/ComfyUI/custom_nodes/LanPaint' || fail "LanPaint nodes were not installed"
+wait_for 600 "ComfyUI back after the node restart" docker exec "$NAME" curl -sf http://127.0.0.1:18188/system_stats
+done_group
+
+say "studio auto-update ran"
+docker logs "$NAME" 2>&1 | grep -E 'studio is up to date|studio updated' \
+    || fail "the studio service did not run its auto-update"
 done_group
 
 if [[ $MODE == second ]]; then

@@ -12,7 +12,13 @@
 #   $WORKSPACE/ai-toolkit            ostris ai-toolkit + its .venv (training, JoyCaption)
 #   $WORKSPACE/.lds                  this kit: Python builds, uv cache, Ollama, secrets
 #
+# On every start of the container the studio also updates itself to its author's
+# latest version (LDS_AUTO_UPDATE) and downloads, through its own Setup installer,
+# whatever models that version lists and the volume is still missing (LDS_MODELS).
+#
 # Safe to re-run: every step checks before it installs.
+#   provision.sh          full provisioning (what Vast runs)
+#   provision.sh deps     only re-sync the studio's Python dependencies
 set -Eeuo pipefail
 
 # ---- settings: each can be overridden with an env var in the Vast template ---------
@@ -30,6 +36,14 @@ LDS_TORCH_VERSION=${LDS_TORCH_VERSION:-2.13.0}
 LDS_TORCHVISION_VERSION=${LDS_TORCHVISION_VERSION:-0.28.0}
 LDS_TORCH_BACKEND=${LDS_TORCH_BACKEND:-auto}   # auto | cu126 | cu129 | cu130 | cpu
 LDS_AITK_CPU=${LDS_AITK_CPU:-0}                # 1 = allow ai-toolkit without a GPU (CI only)
+# Which models to fetch automatically on every start (only what is missing):
+#   all       generation engines (Klein, Krea 2 Edit) + their ComfyUI nodes, the Ollama
+#             vision model, quality tools, and every Test Studio family
+#   generate  the same without the Test Studio families
+#   none      nothing - use the studio's Setup screen by hand
+#   a,b,c     an explicit list of the studio's Setup action names
+LDS_MODELS=${LDS_MODELS:-all}
+LDS_AUTO_UPDATE=${LDS_AUTO_UPDATE:-1}          # 1 = git pull the studio on every container start
 
 KIT=$WORKSPACE/.lds
 LDS_DIR=$WORKSPACE/lora-dataset-studio
@@ -331,6 +345,8 @@ UV_PYTHON_INSTALL_DIR=$UV_PYTHON_INSTALL_DIR
 UV_CACHE_DIR=$UV_CACHE_DIR
 UV_LINK_MODE=$UV_LINK_MODE
 OLLAMA_DIR=$OLLAMA_DIR
+LDS_MODELS=$LDS_MODELS
+LDS_AUTO_UPDATE=$LDS_AUTO_UPDATE
 EOF
     chmod 600 "$ENV_FILE"
 }
@@ -351,10 +367,27 @@ done
 set -a; . /etc/lds-vast.env; set +a
 unset VIRTUAL_ENV PYTHONPATH PYTHONHOME UV_NO_CACHE
 cd "$LDS_DIR"
-# An in-app update may have changed requirements.txt; supervisor-mode restarts do not
-# reinstall it themselves.
-uv pip install --python .venv/bin/python -q -r backend/requirements.txt \
-    || echo "WARNING: could not sync backend/requirements.txt"
+
+# Follow the author's latest version once per container start, not on the in-app
+# restarts in between (/dev/shm is emptied whenever the container stops).
+if [[ ${LDS_AUTO_UPDATE:-1} == 1 && ! -f /dev/shm/lds-auto-updated ]]; then
+    touch /dev/shm/lds-auto-updated
+    before=$(git rev-parse --short HEAD)
+    if [[ -n $(git status --porcelain --untracked-files=no 2>/dev/null) ]]; then
+        echo "auto-update skipped: the studio checkout has local changes"
+    elif branch=$(git symbolic-ref --short -q HEAD) && timeout 300 git pull -q --ff-only origin "$branch"; then
+        after=$(git rev-parse --short HEAD)
+        if [[ $before == "$after" ]]; then echo "studio is up to date ($after)"
+        else echo "studio updated $before -> $after"; fi
+    else
+        echo "WARNING: auto-update failed - starting the installed version ($before)"
+    fi
+fi
+
+# Python dependencies of the version about to start: an update (automatic or the
+# in-app one) may have changed them, and supervisor-mode restarts do not reinstall
+# them themselves. Fast when nothing changed.
+bash "$LDS_KIT/provision.sh" deps || echo "WARNING: could not sync the studio's Python dependencies"
 .venv/bin/python backend/run.py 2>&1
 EOF
 
@@ -375,18 +408,37 @@ export OLLAMA_HOST=127.0.0.1:11434
 export OLLAMA_MODELS="$OLLAMA_DIR/models"
 "$OLLAMA_DIR/bin/ollama" serve 2>&1
 EOF
-    chmod 755 /opt/supervisor-scripts/lds.sh /opt/supervisor-scripts/lds-ollama.sh
 
-    local name
-    for name in lds lds-ollama; do
+    cat > /opt/supervisor-scripts/lds-models.sh <<'EOF'
+#!/bin/bash
+utils=/opt/supervisor-scripts/utils
+. "${utils}/logging.sh"
+. "${utils}/cleanup_generic.sh"
+. "${utils}/environment.sh"
+
+while [ -f /.provisioning ]; do
+    echo "$PROC_NAME waits for instance provisioning to finish (/.provisioning present)"
+    sleep 5
+done
+
+set -a; . /etc/lds-vast.env; set +a
+"$LDS_DIR/.venv/bin/python" "$LDS_KIT/lib/lds_models.py" 2>&1
+EOF
+    chmod 755 /opt/supervisor-scripts/lds.sh /opt/supervisor-scripts/lds-ollama.sh /opt/supervisor-scripts/lds-models.sh
+
+    local name restart startsecs
+    for name in lds lds-ollama lds-models; do
         [[ $name == lds-ollama && $LDS_INSTALL_OLLAMA != 1 ]] && { rm -f /etc/supervisor/conf.d/lds-ollama.conf; continue; }
+        # lds-models is a one-shot job per container start; the other two are services.
+        restart=true; startsecs=10
+        [[ $name == lds-models ]] && { restart=false; startsecs=0; }
         cat > "/etc/supervisor/conf.d/$name.conf" <<EOF
 [program:$name]
 environment=PROC_NAME="%(program_name)s"
 command=/opt/supervisor-scripts/$name.sh
 autostart=true
-autorestart=true
-startsecs=10
+autorestart=$restart
+startsecs=$startsecs
 startretries=20
 stopasgroup=true
 killasgroup=true
@@ -442,7 +494,7 @@ write_helpers() {
 #!/bin/bash
 # Short health report of the studio, ComfyUI and Ollama.
 set -a; . /etc/lds-vast.env; set +a
-supervisorctl status lds lds-ollama comfyui 2>/dev/null
+supervisorctl status lds lds-ollama lds-models comfyui 2>/dev/null
 printf '\nstudio  : '; curl -s -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:$LDS_PORT/" || echo down
 printf 'ComfyUI : '; curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18188/system_stats || echo down
 printf 'Ollama  : '; curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:11434/api/version || echo down
@@ -493,6 +545,238 @@ set -a; . /etc/lds-vast.env; set +a
 exec bash "$LDS_KIT/provision.sh" "$@"
 EOF
 
+    cat > "$KIT/bin/lds-models" <<'EOF'
+#!/bin/bash
+# Download the missing models now: lds-models [all|generate|action,action,...]
+set -a; . /etc/lds-vast.env; set +a
+exec "$LDS_DIR/.venv/bin/python" "$LDS_KIT/lib/lds_models.py" "$@"
+EOF
+
+    mkdir -p "$KIT/lib"
+    cat > "$KIT/lib/lds_models.py" <<'PY'
+"""Download the models LoRA Dataset Studio lists in its own Setup screen.
+
+Runs once per container start (supervisor program lds-models) and asks the studio's
+own installer - the same Setup API its buttons use - for whatever is still missing.
+The list therefore follows the installed studio version: when its author changes or
+adds a model, the next start fetches it. Files already on the volume are skipped by
+the studio itself.
+
+    lds-models [all|generate|none|action,action,...]      default: $LDS_MODELS
+    lds-models plan                                        what "all" would fetch, changes nothing
+"""
+import http.cookiejar
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+API = 'http://127.0.0.1:%s' % os.environ.get('LDS_PORT', '15050')
+ACTIVE = {'queued', 'running'}
+NODE_PACKS = {'krea_nodes', 'lanpaint_nodes', 'krea_sampler_nodes'}
+# Quality tools Setup offers outside "Install everything". bank_scoring stays out on
+# purpose: the studio venv already scores on the GPU, and that Setup action would
+# move scoring into a CPU-only environment.
+QUALITY_TOOLS = ('watermark_detect', 'bank_siglip2')
+
+_opener = urllib.request.build_opener(
+    urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+_csrf = None
+_dry_run = False
+
+
+def log(msg):
+    print('[lds-models] %s %s' % (time.strftime('%H:%M:%S'), msg), flush=True)
+
+
+def call(method, path, body=None, timeout=60):
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(API + path, data=data, method=method)
+    if data is not None:
+        req.add_header('Content-Type', 'application/json')
+    if _csrf and method != 'GET':
+        req.add_header('X-CSRFToken', _csrf)
+    try:
+        with _opener.open(req, timeout=timeout) as resp:
+            return resp.status, json.loads(resp.read() or b'null')
+    except urllib.error.HTTPError as exc:
+        try:
+            return exc.code, json.loads(exc.read() or b'null')
+        except ValueError:
+            return exc.code, None
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return None, {'error': str(exc)}
+
+
+def wait_for(url, seconds):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=5):
+                return True
+        except Exception:
+            time.sleep(5)
+    return False
+
+
+def error_of(code, body):
+    return (body or {}).get('error') or 'HTTP %s' % code
+
+
+def start(action, started):
+    if _dry_run:
+        started.append(action)
+        return
+    code, body = call('POST', '/api/setup/install/' + action, {})
+    if code in (200, 409):          # 409 = already running: wait for it as well
+        started.append(action)
+    else:
+        log('cannot start %s: %s' % (action, error_of(code, body)))
+
+
+def queue_everything(mode, started):
+    if mode not in ('all', 'generate'):
+        for action in filter(None, (a.strip() for a in mode.split(','))):
+            start(action, started)
+        return
+
+    # 1. the studio's own "Install everything": Klein, the Ollama vision model and
+    #    whichever core extras its probes report missing
+    if _dry_run:
+        code, body = call('GET', '/api/setup/install-all/plan')
+    else:
+        code, body = call('POST', '/api/setup/install-all', {})
+    if code == 200:
+        started.extend(body.get('plan') or [])
+    else:
+        log('install-all refused: %s' % error_of(code, body))
+
+    # 2. the second engine, Krea 2 Edit (nodes + weights), which "everything" skips
+    code, body = call('GET', '/api/setup/install-group/krea/plan')
+    if code == 200 and body.get('plan') and _dry_run:
+        started.extend(body['plan'])
+    elif code == 200 and body.get('plan'):
+        code, body = call('POST', '/api/setup/install-group/krea', {})
+        if code == 200:
+            started.extend(body.get('plan') or [])
+        else:
+            log('Krea 2 Edit refused: %s' % error_of(code, body))
+
+    # 3. node packs and quality tools the probes report missing
+    _, caps = call('GET', '/api/capabilities')
+    caps = caps or {}
+    comfy = caps.get('comfyui') or {}
+    for pack in ('lanpaint_nodes', 'krea_sampler_nodes'):
+        if not comfy.get(pack + '_installed'):
+            start(pack, started)
+    for tool in QUALITY_TOOLS:
+        if not caps.get(tool):
+            start(tool, started)
+
+    # 4. every Test Studio family the studio knows, missing files only
+    if mode == 'all':
+        code, body = call('GET', '/api/comfy/trained-image-models', timeout=180)
+        if code != 200:
+            log('could not list the Test Studio models: %s' % error_of(code, body))
+        for family in (body or {}).get('families') or []:
+            for action in family.get('install_actions') or []:
+                start(action, started)
+
+
+def describe(state):
+    progress = state.get('progress') or {}
+    if progress.get('pct') is not None:
+        return '%s %d%% of %.1f GB' % (state.get('state'), progress['pct'],
+                                       (progress.get('total') or 0) / 1e9)
+    return state.get('state') or '?'
+
+
+def wait_until_done(actions, hours=10):
+    deadline = time.time() + hours * 3600
+    last_report = 0
+    seen = {}
+    while True:
+        _, body = call('GET', '/api/setup/install-all/status?actions=' + ','.join(actions))
+        statuses = (body or {}).get('statuses') or {}
+        busy = [a for a in actions if (statuses.get(a) or {}).get('state') in ACTIVE]
+        for action in actions:
+            state = (statuses.get(action) or {}).get('state')
+            if state != seen.get(action) and state not in ACTIVE:
+                log('%s: %s' % (action, state))
+            seen[action] = state
+        if not busy or time.time() > deadline:
+            return statuses
+        if time.time() - last_report > 120:
+            last_report = time.time()
+            log('still downloading: ' + ', '.join(
+                '%s (%s)' % (a, describe(statuses.get(a) or {})) for a in busy))
+        time.sleep(15)
+
+
+def main():
+    global _csrf, _dry_run
+    mode = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get('LDS_MODELS') or 'all').strip()
+    if mode.lower() == 'none':
+        log('LDS_MODELS=none - nothing to download automatically')
+        return 0
+    if mode.lower() == 'plan':
+        _dry_run, mode = True, 'all'
+    mode = mode.lower() if mode.lower() in ('all', 'generate') else mode
+    if _dry_run:
+        started = []
+        queue_everything(mode, started)
+        log('"all" would fetch %d item(s): %s' % (len(started), ', '.join(started) or 'nothing'))
+        return 0
+    if not wait_for(API + '/api/health', 1800):
+        log('the studio did not start - no models downloaded')
+        return 1
+    # The Ollama model pull needs Ollama, the node packs and downloads a ComfyUI tree.
+    wait_for('http://127.0.0.1:11434/api/version', 180)
+    wait_for('http://127.0.0.1:18188/system_stats', 900)
+    code, body = call('GET', '/api/csrf-token')
+    if code != 200:
+        log('no CSRF token from the studio: %s' % error_of(code, body))
+        return 1
+    _csrf = body['csrf_token']
+
+    started = []
+    queue_everything(mode, started)
+    actions = list(dict.fromkeys(started))
+    if not actions:
+        log('every model the studio lists for "%s" is already on the volume' % mode)
+        return 0
+    log('downloading/installing %d item(s): %s' % (len(actions), ', '.join(actions)))
+    statuses = wait_until_done(actions)
+
+    failed = []
+    for action in actions:
+        state = statuses.get(action) or {}
+        if state.get('state') != 'success':
+            failed.append(action)
+            for line in (state.get('log') or [])[-4:]:
+                log('  %s | %s' % (action, line))
+    if any(a in NODE_PACKS and (statuses.get(a) or {}).get('state') == 'success' for a in actions):
+        log('new ComfyUI nodes - installing their requirements and restarting ComfyUI')
+        subprocess.call([os.path.join(os.environ.get('LDS_KIT', '/workspace/.lds'), 'bin', 'comfy-restart')])
+    if failed:
+        log('not installed: %s' % ', '.join(failed))
+        joined = ' '.join(' '.join((statuses.get(a) or {}).get('log') or []) for a in failed).lower()
+        if 'civitai' in joined:
+            log('hint: add your Civitai API key in the studio (Settings), then run lds-models or restart the instance')
+        if 'huggingface' in joined or ' 401' in joined or ' 403' in joined:
+            log('hint: gated model - accept its licence on Hugging Face and add your HF token in the studio Settings')
+        return 1
+    log('all models are ready')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
+PY
+
     chmod 755 "$KIT/bin/"*
     ln -sf "$KIT/bin/"* /usr/local/bin/
 }
@@ -500,16 +784,24 @@ EOF
 summary() {
     log "--------------------------------------------------------------------"
     log "LoRA Dataset Studio is provisioned."
-    log "  open it from the Instance Portal ('Open' on the instance card) -> '$PORTAL_NAME'"
-    log "  studio   : $LDS_DIR ($(git -C "$LDS_DIR" rev-parse --short HEAD))"
+    log "  open it with 'Open' on the instance card (OPEN_BUTTON_PORT=$LDS_EXTERNAL_PORT) or the '$PORTAL_NAME' tile"
+    log "  studio   : $LDS_DIR ($(git -C "$LDS_DIR" rev-parse --short HEAD)), auto-update: $LDS_AUTO_UPDATE"
     log "  data     : $LDS_DATA"
+    log "  models   : '$LDS_MODELS' - downloading in the background (log: supervisorctl tail -f lds-models)"
     [[ $LDS_INSTALL_AITK == 1 ]] && log "  training : $AITK_DIR ($(git -C "$AITK_DIR" rev-parse --short HEAD))"
     [[ $LDS_INSTALL_OLLAMA == 1 ]] && log "  ollama   : $OLLAMA_VERSION, models in $OLLAMA_DIR/models"
-    log "  helpers  : lds-status, lds-token, lds-restart, comfy-restart, lds-reprovision"
+    log "  helpers  : lds-status, lds-models, lds-token, lds-restart, comfy-restart, lds-reprovision"
     log "--------------------------------------------------------------------"
 }
 
 main() {
+    if [[ ${1:-} == deps ]]; then
+        # Called by the studio's service before every start.
+        exec 9>"$WORKSPACE/.lds-provision.lock"
+        flock -w 900 9 || die "provisioning still holds $WORKSPACE/.lds-provision.lock"
+        lds_deps
+        return
+    fi
     exec 9>"$WORKSPACE/.lds-provision.lock"
     flock -n 9 || die "another provisioning run holds $WORKSPACE/.lds-provision.lock"
     local started=$SECONDS
