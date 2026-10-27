@@ -130,6 +130,14 @@ inside 'lds-status' || true
 test -n "$(inside 'lds-token')" || fail "lds-token printed nothing"
 done_group
 
+say "Patreon members helper reaches the studio with the admin token"
+inside 'lds-patreon' || fail "lds-patreon could not ask the studio"
+# No membership here: the studio itself refuses the install (exit 1). Exit 2 would mean
+# the request never got that far (admin token or CSRF refused, studio down).
+rc=0; inside 'lds-patreon install' || rc=$?
+[[ $rc != 2 ]] || fail "lds-patreon install was refused before the studio could decide"
+done_group
+
 say "automatic models through the studio's own Setup installer"
 # CI fetches a small subset (LDS_MODELS above); real instances default to "all".
 wait_for 1200 "lds-models job finished" \

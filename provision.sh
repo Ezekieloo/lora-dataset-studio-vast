@@ -370,16 +370,24 @@ cd "$LDS_DIR"
 
 # Follow the author's latest version once per container start, not on the in-app
 # restarts in between (/dev/shm is emptied whenever the container stops).
+# A Patreon members release (lds-patreon install) sits ahead of the public branch:
+# the fast-forward-only pull keeps it until the public branch contains it.
 if [[ ${LDS_AUTO_UPDATE:-1} == 1 && ! -f /dev/shm/lds-auto-updated ]]; then
     touch /dev/shm/lds-auto-updated
     before=$(git rev-parse --short HEAD)
+    members=
+    marker=$(git rev-parse -q --verify 'refs/lds/patreon/installed^{commit}' 2>/dev/null) \
+        && git merge-base --is-ancestor "$marker" HEAD 2>/dev/null && members=1
     if [[ -n $(git status --porcelain --untracked-files=no 2>/dev/null) ]]; then
         echo "auto-update skipped: the studio checkout has local changes"
-    elif branch=$(git symbolic-ref --short -q HEAD) && timeout 300 git pull -q --ff-only origin "$branch"; then
+    elif branch=$(git symbolic-ref --short -q HEAD) && pull=$(timeout 300 git pull -q --ff-only origin "$branch" 2>&1); then
         after=$(git rev-parse --short HEAD)
         if [[ $before == "$after" ]]; then echo "studio is up to date ($after)"
         else echo "studio updated $before -> $after"; fi
+    elif [[ -n $members ]]; then
+        echo "studio is on the Patreon members release ($before) - newer members releases: lds-patreon install"
     else
+        [[ -n ${pull:-} ]] && echo "$pull"
         echo "WARNING: auto-update failed - starting the installed version ($before)"
     fi
 fi
@@ -811,6 +819,186 @@ if __name__ == '__main__':
     sys.exit(main())
 PY
 
+    cat > "$KIT/bin/lds-patreon" <<'EOF'
+#!/bin/bash
+# Patreon members version of the studio: lds-patreon [status|install]
+set -a; . /etc/lds-vast.env; set +a
+exec "$LDS_DIR/.venv/bin/python" "$LDS_KIT/lib/lds_patreon.py" "$@"
+EOF
+
+    cat > "$KIT/lib/lds_patreon.py" <<'PY'
+"""Install the Patreon members version of LoRA Dataset Studio from the terminal.
+
+The studio's own button (Settings > Maintenance > Updates) does not send the plugin
+admin token, and the studio requires that token from every browser that reaches it
+through this host's login proxy - so the button is refused here. This asks the same
+studio API, with the token, from inside the instance.
+
+    lds-patreon            membership and members release status
+    lds-patreon install    install the members release; the studio then restarts
+
+Exit codes: 0 done or up to date, 1 the studio refused (reason printed), 2 the studio
+could not be asked (down, token or CSRF refused).
+"""
+import http.cookiejar
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+API = 'http://127.0.0.1:%s' % os.environ.get('LDS_PORT', '15050')
+ADMIN = os.environ.get('LDS_PLUGIN_ADMIN_TOKEN', '')
+CONNECT = ('Connect Patreon first: in the studio open Plugins, unlock it with the token from '
+           'lds-token, press Connect Patreon and enter the code the Patreon page shows.')
+
+_opener = urllib.request.build_opener(
+    urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+
+def log(msg):
+    print('[lds-patreon] %s' % msg, flush=True)
+
+
+def call(method, path, csrf=None, timeout=60):
+    req = urllib.request.Request(API + path, method=method, data=b'{}' if method == 'POST' else None)
+    req.add_header('X-LDS-Plugin-Admin', ADMIN)
+    if method == 'POST':
+        req.add_header('Content-Type', 'application/json')
+        req.add_header('X-CSRFToken', csrf or '')
+    try:
+        with _opener.open(req, timeout=timeout) as resp:
+            return resp.status, json.loads(resp.read() or b'null')
+    except urllib.error.HTTPError as exc:
+        try:
+            return exc.code, json.loads(exc.read() or b'null')
+        except ValueError:
+            return exc.code, None
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return None, {'error': str(exc)}
+
+
+def reason(body):
+    if isinstance(body, dict):
+        return body.get('reason') or body.get('error') or body.get('message') or json.dumps(body)[:300]
+    return str(body)
+
+
+def status():
+    """The studio's Patreon channel answer, or None after printing why not."""
+    code, body = call('GET', '/api/update/patreon?force=1', timeout=120)
+    if code is None:
+        log('the studio does not answer on %s: %s' % (API, reason(body)))
+        return None
+    if code != 200 or not isinstance(body, dict):
+        log('the studio refused the status request (HTTP %s): %s' % (code, reason(body)))
+        return None
+    if not body.get('can_manage'):
+        log('the studio refused the plugin admin token - is LDS_PLUGIN_ADMIN_TOKEN in /etc/lds-vast.env?')
+        return None
+    return body
+
+
+def report(s):
+    patreon = (s.get('access') or {}).get('patreon') or {}
+    release = s.get('release') or {}
+    channel = 'members' if s.get('on_channel') else 'public'
+    log('studio     : %s (%s version)' % (s.get('current'), channel))
+    if s.get('status') != 'ready':
+        log('channel    : %s - %s' % (s.get('status'), s.get('message') or 'no details'))
+        return
+    if not patreon.get('linked'):
+        log('membership : Patreon is not connected to this studio')
+    else:
+        log('membership : %s%s' % (patreon.get('status'), ', tier ' + patreon['tier'] if patreon.get('tier') else ''))
+    log('members    : %s' % (release.get('version') or 'no members release published yet'))
+    if s.get('restart_required'):
+        log('state      : installed, waiting for a restart (lds-restart)')
+    elif not s.get('update_available'):
+        log('state      : up to date')
+    elif s.get('blocked_reason'):
+        log('state      : blocked - %s' % s['blocked_reason'])
+    elif not s.get('entitled'):
+        log('state      : available to active members - ' + CONNECT)
+    else:
+        log('state      : ready - run: lds-patreon install')
+
+
+def wait_for_restart(old_version):
+    """The old process exits; supervisor starts the new one, after syncing its
+    Python dependencies when the release changed them."""
+    deadline = time.time() + 30
+    while time.time() < deadline and call('GET', '/api/health', timeout=5)[0] == 200:
+        time.sleep(1)
+    log('the studio is restarting (new dependencies, if any, install first) ...')
+    deadline = time.time() + 1800
+    while time.time() < deadline:
+        if call('GET', '/api/health', timeout=5)[0] == 200:
+            s = status()
+            if s:
+                log('the studio is back: %s -> %s' % (old_version, s.get('current')))
+                report(s)
+                return 0
+            return 2
+        time.sleep(10)
+    log('the studio did not come back within 30 minutes - see: supervisorctl tail lds')
+    return 2
+
+
+def install():
+    s = status()
+    if s is None:
+        return 2
+    report(s)
+    if s.get('status') == 'ready' and not s.get('update_available') and not s.get('restart_required'):
+        return 0
+    code, body = call('GET', '/api/csrf-token')
+    if code != 200 or not isinstance(body, dict):
+        log('no CSRF token from the studio (HTTP %s): %s' % (code, reason(body)))
+        return 2
+    log('installing the members release (download, verify, fast-forward) ...')
+    # The studio decides: membership, running work, a checkout it cannot fast-forward.
+    code, body = call('POST', '/api/update/patreon/apply', csrf=body['csrf_token'], timeout=1800)
+    if code in (400, 403) or code is None:
+        log('the studio refused the request itself (HTTP %s): %s' % (code, reason(body)))
+        return 2
+    body = body if isinstance(body, dict) else {}
+    if code != 200:
+        log('not installed: %s' % reason(body))
+        refusal = body.get('code')
+        if refusal == 'patreon_required':
+            log(CONNECT)
+        elif refusal == 'update_blocked':
+            log('wait for the running work to finish (lds-status, supervisorctl tail -f lds-models), then retry')
+        return 1
+    if body.get('restarting'):
+        return wait_for_restart(s.get('current'))
+    if body.get('restart_required'):
+        log('installed - restart the studio to finish: lds-restart')
+        return 0
+    log(reason(body) if body.get('reason') else 'already installed')
+    return 0
+
+
+def main():
+    command = sys.argv[1] if len(sys.argv) > 1 else 'status'
+    if command == 'install':
+        return install()
+    if command != 'status':
+        print(__doc__)
+        return 2
+    s = status()
+    if s is None:
+        return 2
+    report(s)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
+PY
+
     chmod 755 "$KIT/bin/"*
     ln -sf "$KIT/bin/"* /usr/local/bin/
 }
@@ -824,7 +1012,7 @@ summary() {
     log "  models   : '$LDS_MODELS' - downloading in the background (log: supervisorctl tail -f lds-models)"
     [[ $LDS_INSTALL_AITK == 1 ]] && log "  training : $AITK_DIR ($(git -C "$AITK_DIR" rev-parse --short HEAD))"
     [[ $LDS_INSTALL_OLLAMA == 1 ]] && log "  ollama   : $OLLAMA_VERSION, models in $OLLAMA_DIR/models"
-    log "  helpers  : lds-status, lds-models, lds-token, lds-restart, comfy-restart, lds-reprovision"
+    log "  helpers  : lds-status, lds-models, lds-token, lds-patreon, lds-restart, comfy-restart, lds-reprovision"
     log "--------------------------------------------------------------------"
 }
 

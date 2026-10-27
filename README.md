@@ -21,14 +21,15 @@ Wszystko, co ważne (zbiory danych, modele, zainstalowane programy), leży na **
 9. [Krok 7: powrót do pracy](#krok-7-powrót-do-pracy)
 10. [Modele: co pobiera się samo](#modele-co-pobiera-się-samo)
 11. [Aktualizacje](#aktualizacje)
-12. [Kopia zapasowa](#kopia-zapasowa)
-13. [Portal instancji i terminal](#portal-instancji-i-terminal)
-14. [Polecenia pomocnicze](#polecenia-pomocnicze)
-15. [Bezpieczeństwo](#bezpieczeństwo)
-16. [Rozwiązywanie problemów](#rozwiązywanie-problemów)
-17. [RunPod zamiast Vast.ai](#runpod-zamiast-vastai)
-18. [Ustawienia zaawansowane](#ustawienia-zaawansowane)
-19. [Co jest przetestowane, a co nie](#co-jest-przetestowane-a-co-nie)
+12. [Patreon: wersja dla patronów](#patreon-wersja-dla-patronów)
+13. [Kopia zapasowa](#kopia-zapasowa)
+14. [Portal instancji i terminal](#portal-instancji-i-terminal)
+15. [Polecenia pomocnicze](#polecenia-pomocnicze)
+16. [Bezpieczeństwo](#bezpieczeństwo)
+17. [Rozwiązywanie problemów](#rozwiązywanie-problemów)
+18. [RunPod zamiast Vast.ai](#runpod-zamiast-vastai)
+19. [Ustawienia zaawansowane](#ustawienia-zaawansowane)
+20. [Co jest przetestowane, a co nie](#co-jest-przetestowane-a-co-nie)
 
 ## Co dostajesz
 
@@ -188,6 +189,17 @@ Po każdym starcie instancji zestaw prosi **instalator wbudowany w studio** (ten
 - **ai-toolkit:** w terminalu `git -C /workspace/ai-toolkit pull && lds-reprovision`.
 - **ComfyUI:** jest kopiowany z obrazu tylko przy pierwszym uruchomieniu na pustym wolumenie. Później aktualizujesz go przez ComfyUI-Manager albo `git -C /workspace/ComfyUI pull`, a potem `comfy-restart`.
 
+## Patreon: wersja dla patronów
+
+Funkcje opisane na kartach wtyczek jako *Membership features* wymagają **wersji studia dla patronów** (LDS Member). Przycisk w *Settings → Maintenance → Updates* nie zadziała na wynajętej maszynie: studio odrzuca go, bo nie wysyła tokenu administratora. Dlatego instalujesz ją z terminala:
+
+1. **Połącz Patreona** (raz, połączenie zostaje na wolumenie): w studiu *Plugins*, wklej wynik `lds-token` w pole *Plugin admin token*, kliknij *Unlock plugin changes*, potem **Connect Patreon**. Zatwierdź na stronie Patreona i wpisz w studiu kod, który ona pokaże (masz 5 prób).
+2. **Poczekaj, aż skończy się pobieranie modeli** (`lds-status`). Studio nie aktualizuje się, gdy pracuje.
+3. W terminalu: `lds-patreon install`. Studio pobierze i sprawdzi wersję dla patronów, zrestartuje się i po chwili wróci.
+4. W studiu *Plugins → Updates*: zainstaluj nowsze wersje wtyczek dla patronów (znów z odblokowanym tokenem).
+
+Sam stan sprawdzisz poleceniem `lds-patreon`. Automatyczna aktualizacja przy starcie zostawia wersję dla patronów w spokoju, dopóki publiczna wersja jej nie dogoni. Nowsze wydania dla patronów instalujesz tak samo: `lds-patreon install`.
+
 ## Kopia zapasowa
 
 Wolumen leży na dysku jednej maszyny. Jeśli właściciel ją wyłączy na stałe, dane przepadną, więc **trzymaj kopię tego, czego nie da się odtworzyć**:
@@ -214,6 +226,7 @@ Wpisuj je w **Jupyter Terminal**:
 | `lds-status` | Stan studia, ComfyUI, Ollamy i pobierania modeli, wersja studia, zajętość wolumenu, kosz, pamięć GPU |
 | `lds-models` | Pobiera brakujące modele teraz (np. po wpisaniu kluczy). `lds-models plan` tylko pokazuje, co by pobrał |
 | `lds-token` | Wypisuje *plugin admin token* do instalowania wtyczek |
+| `lds-patreon` | Stan członkostwa Patreon i wersji dla patronów. `lds-patreon install` ją instaluje ([więcej](#patreon-wersja-dla-patronów)) |
 | `lds-restart` | Restartuje studio |
 | `comfy-restart` | Doinstalowuje zależności węzłów ComfyUI i restartuje ComfyUI |
 | `lds-reprovision` | Ponownie uruchamia instalację (bezpieczne: pomija to, co już jest) |
@@ -239,6 +252,7 @@ Wpisuj je w **Jupyter Terminal**:
 | Któryś model się nie pobrał | `supervisorctl tail lds-models` pokaże, który i dlaczego. Po poprawce (klucz, licencja HF, miejsce) uruchom `lds-models` |
 | Studio pokazuje „nodes missing” | `comfy-restart` |
 | Instalacja wtyczki odrzucona („plugin admin token”) | `lds-token` i wklej wynik na stronie Plugins |
+| Widać tylko darmowe wersje wtyczek, a Updates nie instaluje wersji dla patronów | Połącz Patreona i uruchom `lds-patreon install` ([więcej](#patreon-wersja-dla-patronów)) |
 | Po automatycznej aktualizacji coś przestało działać | Ustaw w szablonie `LDS_AUTO_UPDATE=0` i zgłoś problem autorowi studia |
 | Na RTX 5090 trening kończy się błędem CUDA („no kernel image”) | Sterownik hosta jest za stary. Wybierz maszynę z *Max CUDA* ≥ 13.0 |
 | Kończy się miejsce na wolumenie | `lds-status`. Usunięte w studiu pliki trafiają do kosza `/workspace/.Trash-0`; opróżnisz go `rm -rf /workspace/.Trash-0/*`. Możesz też przełączyć się na `LDS_MODELS=generate` i usunąć nieużywane modele Test Studio |
@@ -347,7 +361,9 @@ Układ na wolumenie:
   - czy automatyczna aktualizacja się wykonuje;
   - czy automat modeli działa przez instalator studia. Test pobiera mały podzbiór (VAE Klein i węzły LanPaint), bo maszyna testowa nie ma miejsca na 140 GB.
   - czy Jupyter (port 8080) i logowanie hasłem działają za proxy z logowaniem. Test uruchamia kontener tak jak RunPod: zwykły Docker ze zmiennymi `VAST_TCP_PORT_*`.
+  - czy `lds-patreon` dociera do studia z tokenem administratora (bez członkostwa studio odmawia instalacji, i tego test oczekuje).
 - **Czego test nie sprawdza:**
+  - samej instalacji wersji dla patronów, bo wymaga aktywnego członkostwa;
   - samego RunPoda (jego proxy i konsoli);
   - pracy na prawdziwej karcie, czyli wersji CUDA torch, treningu i generowania na GPU;
   - pobierania pełnego zestawu modeli;
