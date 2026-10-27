@@ -834,8 +834,15 @@ admin token, and the studio requires that token from every browser that reaches 
 through this host's login proxy - so the button is refused here. This asks the same
 studio API, with the token, from inside the instance.
 
-    lds-patreon            membership and members release status
-    lds-patreon install    install the members release; the studio then restarts
+    lds-patreon                         membership and members release status
+    lds-patreon install                 install the members release; the studio then restarts
+    lds-patreon install --step-back     same, when the studio is ahead of that release
+
+A members release builds on a public commit. When the public branch has moved on since
+(auto-update follows it), the studio refuses to go back and asks to wait for the next
+members release. --step-back moves the checkout back along the public history to the
+newest commit the release builds on, lists the public commits it sets aside, then
+installs; if the install does not happen, the checkout returns to where it was.
 
 Exit codes: 0 done or up to date, 1 the studio refused (reason printed), 2 the studio
 could not be asked (down, token or CSRF refused).
@@ -843,6 +850,7 @@ could not be asked (down, token or CSRF refused).
 import http.cookiejar
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
@@ -850,8 +858,11 @@ import urllib.request
 
 API = 'http://127.0.0.1:%s' % os.environ.get('LDS_PORT', '15050')
 ADMIN = os.environ.get('LDS_PLUGIN_ADMIN_TOKEN', '')
+LDS_DIR = os.environ.get('LDS_DIR', '/workspace/lora-dataset-studio')
 CONNECT = ('Connect Patreon first: in the studio open Plugins, unlock it with the token from '
            'lds-token, press Connect Patreon and enter the code the Patreon page shows.')
+AHEAD = 'ahead of the members release'   # the studio's own wording for this refusal
+MAX_STEPS = 40
 
 _opener = urllib.request.build_opener(
     urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
@@ -946,13 +957,64 @@ def wait_for_restart(old_version):
     return 2
 
 
-def install():
+def git(*args):
+    return subprocess.run(['git', '-C', LDS_DIR, *args], capture_output=True, text=True)
+
+
+def head():
+    return git('rev-parse', 'HEAD').stdout.strip()
+
+
+def step_back():
+    """Move the checkout back to the newest public commit the members release builds
+    on. Returns the commit it started from, or None with the checkout unchanged."""
+    if git('status', '--porcelain', '--untracked-files=no').stdout.strip():
+        log('the studio checkout has local changes - not stepping back')
+        return None
+    original = head()
+    commits = git('rev-list', '--first-parent', '--max-count=%d' % MAX_STEPS, 'HEAD~1').stdout.split()
+    for commit in commits:
+        if git('reset', '-q', '--hard', commit).returncode != 0:
+            break
+        probe = status()
+        if probe is None or probe.get('status') != 'ready':
+            break
+        if probe.get('update_available') and not probe.get('blocked_reason'):
+            log('stepped back to %s; public commits set aside until a members release includes them:'
+                % commit[:8])
+            for line in git('log', '--format=%h %cs %s', '%s..%s' % (commit, original)).stdout.splitlines():
+                log('  ' + line)
+            return original
+    git('reset', '-q', '--hard', original)
+    log('no public commit among the last %d is one the members release builds on - nothing changed'
+        % MAX_STEPS)
+    return None
+
+
+def install(step_back_allowed=False):
     s = status()
     if s is None:
         return 2
     report(s)
     if s.get('status') == 'ready' and not s.get('update_available') and not s.get('restart_required'):
         return 0
+    stepped = None   # (commit stepped back to, commit to return to)
+    if step_back_allowed and AHEAD in (s.get('blocked_reason') or ''):
+        original = step_back()
+        if original is None:
+            return 1
+        stepped = head(), original
+    try:
+        code = apply(s, step_back_hint=not step_back_allowed)
+    finally:
+        # Nothing installed (refused, failed, interrupted): back to the public commit.
+        if stepped and head() == stepped[0]:
+            git('reset', '-q', '--hard', stepped[1])
+            log('the checkout is back on %s' % stepped[1][:8])
+    return code
+
+
+def apply(s, step_back_hint):
     code, body = call('GET', '/api/csrf-token')
     if code != 200 or not isinstance(body, dict):
         log('no CSRF token from the studio (HTTP %s): %s' % (code, reason(body)))
@@ -971,6 +1033,8 @@ def install():
             log(CONNECT)
         elif refusal == 'update_blocked':
             log('wait for the running work to finish (lds-status, supervisorctl tail -f lds-models), then retry')
+        elif step_back_hint and AHEAD in reason(body) + (s.get('blocked_reason') or ''):
+            log('to install it now anyway: lds-patreon install --step-back')
         return 1
     if body.get('restarting'):
         return wait_for_restart(s.get('current'))
@@ -984,7 +1048,7 @@ def install():
 def main():
     command = sys.argv[1] if len(sys.argv) > 1 else 'status'
     if command == 'install':
-        return install()
+        return install(step_back_allowed='--step-back' in sys.argv[2:])
     if command != 'status':
         print(__doc__)
         return 2

@@ -136,6 +136,15 @@ inside 'lds-patreon' || fail "lds-patreon could not ask the studio"
 # the request never got that far (admin token or CSRF refused, studio down).
 rc=0; inside 'lds-patreon install' || rc=$?
 [[ $rc != 2 ]] || fail "lds-patreon install was refused before the studio could decide"
+# Stepping back (when the public branch is ahead of the members release) must leave the
+# checkout where it was once the studio refuses the install.
+before=$(inside 'git -C /workspace/lora-dataset-studio rev-parse HEAD')
+rc=0; inside 'lds-patreon install --step-back' || rc=$?
+[[ $rc != 2 ]] || fail "lds-patreon install --step-back was refused before the studio could decide"
+[[ $(inside 'git -C /workspace/lora-dataset-studio rev-parse HEAD') == "$before" ]] \
+    || fail "lds-patreon install --step-back left the studio checkout moved"
+[[ -z $(inside 'git -C /workspace/lora-dataset-studio status --porcelain --untracked-files=no') ]] \
+    || fail "lds-patreon install --step-back left modified files in the studio checkout"
 done_group
 
 say "automatic models through the studio's own Setup installer"

@@ -196,6 +196,7 @@ Funkcje opisane na kartach wtyczek jako *Membership features* wymagają **wersji
 1. **Połącz Patreona** (raz, połączenie zostaje na wolumenie): w studiu *Plugins*, wklej wynik `lds-token` w pole *Plugin admin token*, kliknij *Unlock plugin changes*, potem **Connect Patreon**. Zatwierdź na stronie Patreona i wpisz w studiu kod, który ona pokaże (masz 5 prób).
 2. **Poczekaj, aż skończy się pobieranie modeli** (`lds-status`). Studio nie aktualizuje się, gdy pracuje.
 3. W terminalu: `lds-patreon install`. Studio pobierze i sprawdzi wersję dla patronów, zrestartuje się i po chwili wróci.
+   - Jeśli `lds-patreon` pokazuje `blocked - This installation is ahead of the members release`, to publiczna wersja ma już poprawki nowsze niż wydanie dla patronów, a studio samo nie cofa się do starszej wersji. Możesz poczekać na kolejne wydanie albo użyć `lds-patreon install --step-back`. To polecenie cofa studio do publicznej wersji, na której zbudowano wydanie dla patronów, wypisuje odłożone poprawki i instaluje wydanie. Jeśli instalacja się nie uda, wszystko wraca do stanu sprzed polecenia. Odłożone poprawki wrócą z kolejnym wydaniem dla patronów.
 4. W studiu *Plugins → Updates*: zainstaluj nowsze wersje wtyczek dla patronów (znów z odblokowanym tokenem).
 
 Sam stan sprawdzisz poleceniem `lds-patreon`. Automatyczna aktualizacja przy starcie zostawia wersję dla patronów w spokoju, dopóki publiczna wersja jej nie dogoni. Nowsze wydania dla patronów instalujesz tak samo: `lds-patreon install`.
