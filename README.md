@@ -199,6 +199,8 @@ Funkcje opisane na kartach wtyczek jako *Membership features* wymagają **wersji
    - Jeśli `lds-patreon` pokazuje `blocked - This installation is ahead of the members release`, to publiczna wersja ma już poprawki nowsze niż wydanie dla patronów, a studio samo nie cofa się do starszej wersji. Możesz poczekać na kolejne wydanie albo użyć `lds-patreon install --step-back`. To polecenie cofa studio do publicznej wersji, na której zbudowano wydanie dla patronów, wypisuje odłożone poprawki i instaluje wydanie. Jeśli instalacja się nie uda, wszystko wraca do stanu sprzed polecenia. Odłożone poprawki wrócą z kolejnym wydaniem dla patronów.
 4. W studiu *Plugins → Updates*: zainstaluj nowsze wersje wtyczek dla patronów (znów z odblokowanym tokenem).
 
+Powrót do wersji publicznej (np. gdy coś przestanie działać): `git -C /workspace/lora-dataset-studio fetch -q origin v2 && git -C /workspace/lora-dataset-studio reset -q --hard origin/v2 && lds-restart`. Dane i ustawienia zostają.
+
 Sam stan sprawdzisz poleceniem `lds-patreon`. Automatyczna aktualizacja przy starcie zostawia wersję dla patronów w spokoju, dopóki publiczna wersja jej nie dogoni. Nowsze wydania dla patronów instalujesz tak samo: `lds-patreon install`.
 
 ## Kopia zapasowa
