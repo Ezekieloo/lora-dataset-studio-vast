@@ -973,6 +973,8 @@ def step_back():
         return None
     original = head()
     commits = git('rev-list', '--first-parent', '--max-count=%d' % MAX_STEPS, 'HEAD~1').stdout.split()
+    log('looking for the public commit the members release builds on '
+        '(the studio checks each step with Patreon, a few seconds each) ...')
     for commit in commits:
         if git('reset', '-q', '--hard', commit).returncode != 0:
             break
