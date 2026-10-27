@@ -26,8 +26,9 @@ Wszystko, co ważne (zbiory danych, modele, zainstalowane programy), leży na **
 14. [Polecenia pomocnicze](#polecenia-pomocnicze)
 15. [Bezpieczeństwo](#bezpieczeństwo)
 16. [Rozwiązywanie problemów](#rozwiązywanie-problemów)
-17. [Ustawienia zaawansowane](#ustawienia-zaawansowane)
-18. [Co jest przetestowane, a co nie](#co-jest-przetestowane-a-co-nie)
+17. [RunPod zamiast Vast.ai](#runpod-zamiast-vastai)
+18. [Ustawienia zaawansowane](#ustawienia-zaawansowane)
+19. [Co jest przetestowane, a co nie](#co-jest-przetestowane-a-co-nie)
 
 ## Co dostajesz
 
@@ -51,7 +52,9 @@ Ceny na Vast.ai ustalają właściciele maszyn i zmieniają się codziennie. Ori
 |---|---|---|
 | RTX 4090 (24 GB) | ok. 0,30–0,50 $/h | tylko gdy instancja działa |
 | RTX 5090 (32 GB) | ok. 0,40–0,80 $/h | tylko gdy instancja działa |
-| Wolumen 300 GB | zwykle ok. 15–30 $/miesiąc (zależy od hosta: 0,01–0,20 $/GB) | cały czas, dopóki go nie usuniesz |
+| Wolumen 300 GB | zależy od hosta: od kilku do ponad 150 $/miesiąc (0,01–0,60 $/GB) | cały czas, dopóki go nie usuniesz |
+
+> ⚠️ **Na Vast.ai cenę dysku ustala każdy host osobno** i potrafi ona być wielokrotnie wyższa od ceny karty. Przed wynajmem sprawdź w ofercie cenę za GB miesięcznie (szukaj poniżej ok. 0,10 $/GB). Jeśli zależy Ci na przewidywalnej, niskiej cenie dysku, zobacz [RunPod zamiast Vast.ai](#runpod-zamiast-vastai): tam wolumen sieciowy kosztuje stałe 0,07 $/GB miesięcznie.
 
 - **Pierwsze uruchomienie:** ok. 20–30 minut instalacji programów. Potem w tle pobiera się ok. 140 GB modeli, co zajmuje od kilkunastu minut do ponad godziny, zależnie od łącza maszyny. Studio działa już w tym czasie.
 - **Kolejne uruchomienia** na tym samym wolumenie trwają kilka minut, bo nic nie instaluje się ani nie pobiera od nowa.
@@ -242,6 +245,68 @@ Wpisuj je w **Jupyter Terminal**:
 
 Logi: portal instancji → zakładka z logami (`lds`, `lds-models`, `lds-ollama`, `comfyui`, *provisioning*).
 
+## RunPod zamiast Vast.ai
+
+Ten sam zestaw działa na [RunPod](https://www.runpod.io/). RunPod uruchamia ten sam obraz `vastai/comfy` jako zwykły kontener, a zmienne poniżej robią to, co na Vast.ai robi sama platforma.
+
+**Dlaczego RunPod:** wolumen sieciowy kosztuje stałe **0,07 $/GB miesięcznie** (200 GB to ok. 14 $), istnieje niezależnie od podów i da się go później powiększyć.
+
+**Ograniczenia RunPod:**
+- Pod może działać tylko w centrum danych, w którym leży wolumen.
+- Wolumen sieciowy jest wolniejszy od lokalnego dysku, więc pierwsze ładowanie modelu trwa dłużej.
+- Proxy RunPod zrywa połączenie po 100 sekundach bez odpowiedzi. Bardzo duże eksporty ZIP i kopie zapasowe mogą się nie zmieścić w tym czasie.
+
+### 1. Wolumen sieciowy
+
+**Storage → Network Volumes → New Network Volume**:
+- centrum danych, w którym są dostępne RTX 4090 (np. `EU-RO-1`),
+- rozmiar **200 GB** dla zestawu modeli `generate` albo **300 GB** dla `all`.
+
+Istniejący wolumen powiększysz w jego ustawieniach.
+
+### 2. Szablon
+
+**My Templates → New Template**, typ *Pod*, GPU NVIDIA:
+
+| Pole | Wartość |
+|---|---|
+| **Container Image** | `vastai/comfy:v0.41.0-cuda-12.9-py312` |
+| **Container Start Command** | **zostaw puste** (start robi sam obraz) |
+| **Container Disk** | 50 GB |
+| **Volume Mount Path** | `/workspace` |
+| **Expose HTTP Ports** | `5050,8080,1111,8188` |
+| **Widoczność** | prywatny |
+
+**Zmienne środowiskowe** (na RunPod wpisuj wartości **bez cudzysłowów**):
+
+| Klucz | Wartość |
+|---|---|
+| `PROVISIONING_SCRIPT` | `https://raw.githubusercontent.com/Ezekieloo/lora-dataset-studio-vast/main/provision.sh` |
+| `OPEN_BUTTON_TOKEN` | **Twoje hasło do logowania**: długie i losowe, np. 32 znaki |
+| `PORTAL_CONFIG` | `localhost:1111:11111:/:Instance Portal\|localhost:5050:15050:/:LoRA Dataset Studio\|localhost:8188:18188:/:ComfyUI\|localhost:8080:18080:/:Jupyter` |
+| `VAST_TCP_PORT_5050` | `5050` |
+| `VAST_TCP_PORT_8080` | `8080` |
+| `VAST_TCP_PORT_1111` | `1111` |
+| `VAST_TCP_PORT_8188` | `8188` |
+| `COMFYUI_ARGS` | `--disable-auto-launch --port 18188 --enable-cors-header` |
+| `DATA_DIRECTORY` | `/workspace/` |
+| `LDS_MODELS` | `generate` (przy 200 GB) albo `all` (przy 300 GB) |
+| `HF_TOKEN`, `CIVITAI_API_KEY` | opcjonalnie. Najlepiej jako *Secrets* RunPod: wartość `{{ RUNPOD_SECRET_nazwa }}` |
+
+Zmienne `VAST_TCP_PORT_*` są obowiązkowe. Bez nich proxy z logowaniem nie wystawi studia ani Jupytera.
+
+### 3. Uruchomienie
+
+1. **Pods → Deploy**: wybierz swój wolumen sieciowy, kartę **RTX 4090** i szablon „LoRA Dataset Studio”, potem **Deploy On-Demand**.
+2. Gdy pod działa: **Connect → HTTP Service [Port 5050]**. Otworzy się adres `https://<id-poda>-5050.proxy.runpod.net`.
+3. Przeglądarka zapyta o login: **użytkownik `vastai`**, **hasło = wartość `OPEN_BUTTON_TOKEN`**. Pierwszy start (instalacja) trwa ok. 20–40 minut. Do tego czasu zobaczysz stronę oczekiwania.
+4. **Jupyter** (pliki i terminal): **Connect → HTTP Service [Port 8080]**, ten sam login. Terminal otworzysz przez **New → Terminal**. Działają w nim polecenia z sekcji [Polecenia pomocnicze](#polecenia-pomocnicze).
+
+### 4. Koniec sesji i powrót
+
+- **Terminate** poda: kontener znika, **wolumen sieciowy zostaje** z całą zawartością. Płacisz tylko za wolumen.
+- Następnym razem: **Pods → Deploy** z tym samym wolumenem i szablonem. Start trwa kilka minut, bo wszystko jest już na wolumenie, a studio przy okazji się aktualizuje.
+
 ## Ustawienia zaawansowane
 
 Te zmienne możesz dodać do szablonu (`-e NAZWA=wartość`):
@@ -281,7 +346,9 @@ Układ na wolumenie:
   - czy ustawienia są poprawnie wpisane;
   - czy automatyczna aktualizacja się wykonuje;
   - czy automat modeli działa przez instalator studia. Test pobiera mały podzbiór (VAE Klein i węzły LanPaint), bo maszyna testowa nie ma miejsca na 140 GB.
+  - czy Jupyter (port 8080) i logowanie hasłem działają za proxy z logowaniem. Test uruchamia kontener tak jak RunPod: zwykły Docker ze zmiennymi `VAST_TCP_PORT_*`.
 - **Czego test nie sprawdza:**
+  - samego RunPoda (jego proxy i konsoli);
   - pracy na prawdziwej karcie, czyli wersji CUDA torch, treningu i generowania na GPU;
   - pobierania pełnego zestawu modeli;
   - samego panelu Vast.ai i przycisku **Open**.
