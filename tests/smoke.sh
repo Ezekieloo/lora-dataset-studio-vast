@@ -44,12 +44,13 @@ docker run -d --name "$NAME" \
     -e OPEN_BUTTON_TOKEN="$TOKEN" \
     -e OPEN_BUTTON_PORT=1111 \
     -e DATA_DIRECTORY=/workspace/ \
-    -e PORTAL_CONFIG="localhost:1111:11111:/:Instance Portal|localhost:8188:18188:/:ComfyUI|localhost:5050:15050:/:LoRA Dataset Studio" \
+    -e PORTAL_CONFIG="localhost:1111:11111:/:Instance Portal|localhost:8188:18188:/:ComfyUI|localhost:5050:15050:/:LoRA Dataset Studio|localhost:8080:18080:/:Jupyter" \
     -e COMFYUI_ARGS="--disable-auto-launch --port 18188 --enable-cors-header --cpu" \
     -e LDS_AITK_CPU=1 \
     -e LDS_MODELS=klein_vae,lanpaint_nodes \
     -e VAST_TCP_PORT_1111=1111 -e VAST_TCP_PORT_8188=8188 -e VAST_TCP_PORT_5050=5050 \
-    -p 127.0.0.1:5050:5050 \
+    -e VAST_TCP_PORT_8080=8080 \
+    -p 127.0.0.1:5050:5050 -p 127.0.0.1:8080:8080 \
     "$IMAGE" >/dev/null
 started=$SECONDS
 done_group
@@ -82,6 +83,14 @@ echo "with the Open-button token: HTTP $code"
 [[ $code == 200 ]] || fail "studio not reachable through Caddy with the token (HTTP $code)"
 curl -sf -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5050/ | grep -qi '<div id="root"' \
     || fail "the studio page did not render through Caddy"
+# Jupyter is the file browser and terminal on hosts without Vast's console (RunPod).
+wait_for 300 "Jupyter answers through Caddy on :8080" \
+    curl -sf -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api
+code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api || true)
+[[ $code == 401 || $code == 403 || $code == 302 ]] || fail "Jupyter reachable without the login (HTTP $code)"
+code=$(curl -s -o /dev/null -w '%{http_code}' -u "vastai:$TOKEN" http://127.0.0.1:5050/api/health)
+echo "studio with basic auth (vastai / token): HTTP $code"
+[[ $code == 200 ]] || fail "basic auth login does not reach the studio (HTTP $code)"
 done_group
 
 say "environments"
