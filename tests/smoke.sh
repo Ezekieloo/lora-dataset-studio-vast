@@ -165,6 +165,31 @@ logs_have '\[lds-patreon\].*members auto-update skipped' \
     || fail "the start-up members update did not run (or did not skip cleanly)"
 done_group
 
+say "plugin updates (what the Store's Update all does)"
+logs_have '\[lds-patreon\].*\(no plugins installed\|installed plugins are up to date\|plugin update:\)' \
+    || fail "the start-up plugin update did not run"
+if [[ $MODE == first ]]; then
+    # An older release of a free plugin, for lds-patreon plugins to bring up to date.
+    docker cp "$HERE/tests/store_old_plugin.py" "$NAME:/tmp/store_old_plugin.py"
+    out=$(inside 'set -a; . /etc/lds-vast.env; set +a; "$LDS_DIR/.venv/bin/python" /tmp/store_old_plugin.py') \
+        || { echo "$out"; fail "could not install an older plugin release to update"; }
+    echo "$out"
+    picked=$(grep '^PICKED ' <<<"$out" | cut -d' ' -f2- || true)
+    if [[ -z $picked ]]; then
+        echo "skip: the store has no free plugin with two compatible releases"
+    else
+        read -r pid old new <<<"$picked"
+        out=$(inside 'lds-patreon plugins') || { echo "$out"; fail "lds-patreon plugins failed"; }
+        echo "$out"
+        grep -q "updated to $new" <<<"$out" || fail "lds-patreon plugins did not update $pid $old -> $new"
+    fi
+fi
+out=$(inside 'lds-patreon plugins') || { echo "$out"; fail "lds-patreon plugins failed with nothing to update"; }
+echo "$out"
+grep -q 'no plugins installed\|installed plugins are up to date\|not updated (members only' <<<"$out" \
+    || fail "lds-patreon plugins did not report the plugins up to date"
+done_group
+
 say "extra ComfyUI node packs (Krea2 Regional for Multi-subject)"
 inside 'test -f /workspace/ComfyUI/custom_nodes/ComfyUI-Krea2-Regional/__init__.py' \
     || fail "Krea2 Regional was not cloned"

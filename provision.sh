@@ -47,6 +47,9 @@ LDS_AUTO_UPDATE=${LDS_AUTO_UPDATE:-1}          # 1 = git pull the studio on ever
 # 1 = on every start, install a newer Patreon members release (only when Patreon is
 # connected in the studio with an active membership; lds-patreon install --step-back)
 LDS_PATREON_AUTO_UPDATE=${LDS_PATREON_AUTO_UPDATE:-1}
+# 1 = on every start, update the installed plugins that have a newer compatible release
+# (the Store's "Update all"; lds-patreon plugins). New plugins are never installed.
+LDS_PLUGINS_AUTO_UPDATE=${LDS_PLUGINS_AUTO_UPDATE:-1}
 # ComfyUI node packs the studio asks users to add with ComfyUI-Manager themselves
 # (git URLs, space separated; "none" = skip). Cloned once; update them in the Manager.
 #   Krea2 Regional: Multi-subject in the Test Studio (LDS members)
@@ -379,6 +382,7 @@ OLLAMA_DIR=$OLLAMA_DIR
 LDS_MODELS=$LDS_MODELS
 LDS_AUTO_UPDATE=$LDS_AUTO_UPDATE
 LDS_PATREON_AUTO_UPDATE=$LDS_PATREON_AUTO_UPDATE
+LDS_PLUGINS_AUTO_UPDATE=$LDS_PLUGINS_AUTO_UPDATE
 EOF
     chmod 600 "$ENV_FILE"
 }
@@ -462,8 +466,8 @@ while [ -f /.provisioning ]; do
 done
 
 set -a; . /etc/lds-vast.env; set +a
-# A newer Patreon members release first (it restarts the studio), so the models
-# below are the ones that version lists.
+# A newer Patreon members release first (it restarts the studio), then the installed
+# plugins' updates (one more restart), so the models below are the ones they list.
 "$LDS_DIR/.venv/bin/python" "$LDS_KIT/lib/lds_patreon.py" auto 2>&1 || true
 "$LDS_DIR/.venv/bin/python" "$LDS_KIT/lib/lds_models.py" 2>&1
 EOF
@@ -872,8 +876,12 @@ studio API, with the token, from inside the instance.
     lds-patreon                         membership and members release status
     lds-patreon install                 install the members release; the studio then restarts
     lds-patreon install --step-back     same, when the studio is ahead of that release
+    lds-patreon plugins                 update the installed plugins (free and members) that
+                                        have a newer compatible release, then restart once -
+                                        the Store's "Update all"; it installs no new plugin
     lds-patreon auto                    what every container start runs: install --step-back
-                                        when Patreon is connected and a newer release is out
+                                        when Patreon is connected and a newer release is out,
+                                        then plugins (LDS_PLUGINS_AUTO_UPDATE=0 turns that off)
 
 A members release builds on a public commit. When the public branch has moved on since
 (auto-update follows it), the studio refuses to go back and asks to wait for the next
@@ -909,8 +917,9 @@ def log(msg):
     print('[lds-patreon] %s' % msg, flush=True)
 
 
-def call(method, path, csrf=None, timeout=60):
-    req = urllib.request.Request(API + path, method=method, data=b'{}' if method == 'POST' else None)
+def call(method, path, csrf=None, timeout=60, body=None):
+    data = json.dumps(body or {}).encode() if method == 'POST' else None
+    req = urllib.request.Request(API + path, method=method, data=data)
     req.add_header('X-LDS-Plugin-Admin', ADMIN)
     if method == 'POST':
         req.add_header('Content-Type', 'application/json')
@@ -973,9 +982,9 @@ def report(s):
         log('state      : ready - run: lds-patreon install')
 
 
-def wait_for_restart(old_version):
+def wait_for_restart():
     """The old process exits; supervisor starts the new one, after syncing its
-    Python dependencies when the release changed them."""
+    Python dependencies when they changed. True once it answers again."""
     deadline = time.time() + 30
     while time.time() < deadline and call('GET', '/api/health', timeout=5)[0] == 200:
         time.sleep(1)
@@ -983,15 +992,27 @@ def wait_for_restart(old_version):
     deadline = time.time() + 1800
     while time.time() < deadline:
         if call('GET', '/api/health', timeout=5)[0] == 200:
-            s = status()
-            if s:
-                log('the studio is back: %s -> %s' % (old_version, s.get('current')))
-                report(s)
-                return 0
-            return 2
+            return True
         time.sleep(10)
     log('the studio did not come back within 30 minutes - see: supervisorctl tail lds')
-    return 2
+    return False
+
+
+def wait_for_studio():
+    deadline = time.time() + 1800
+    while call('GET', '/api/health', timeout=5)[0] != 200:
+        if time.time() > deadline:
+            return False
+        time.sleep(10)
+    return True
+
+
+def csrf_token():
+    code, body = call('GET', '/api/csrf-token')
+    if code != 200 or not isinstance(body, dict) or not body.get('csrf_token'):
+        log('no CSRF token from the studio (HTTP %s): %s' % (code, reason(body)))
+        return None
+    return body['csrf_token']
 
 
 def git(*args):
@@ -1054,13 +1075,12 @@ def install(step_back_allowed=False, s=None):
 
 
 def apply(s, step_back_hint):
-    code, body = call('GET', '/api/csrf-token')
-    if code != 200 or not isinstance(body, dict):
-        log('no CSRF token from the studio (HTTP %s): %s' % (code, reason(body)))
+    csrf = csrf_token()
+    if csrf is None:
         return 2
     log('installing the members release (download, verify, fast-forward) ...')
     # The studio decides: membership, running work, a checkout it cannot fast-forward.
-    code, body = call('POST', '/api/update/patreon/apply', csrf=body['csrf_token'], timeout=1800)
+    code, body = call('POST', '/api/update/patreon/apply', csrf=csrf, timeout=1800)
     if code in (400, 403) or code is None:
         log('the studio refused the request itself (HTTP %s): %s' % (code, reason(body)))
         return 2
@@ -1076,7 +1096,14 @@ def apply(s, step_back_hint):
             log('to install it now anyway: lds-patreon install --step-back')
         return 1
     if body.get('restarting'):
-        return wait_for_restart(s.get('current'))
+        if not wait_for_restart():
+            return 2
+        after = status()
+        if after is None:
+            return 2
+        log('the studio is back: %s -> %s' % (s.get('current'), after.get('current')))
+        report(after)
+        return 0
     if body.get('restart_required'):
         log('installed - restart the studio to finish: lds-restart')
         return 0
@@ -1084,18 +1111,130 @@ def apply(s, step_back_hint):
     return 0
 
 
+def plugins_state():
+    code, body = call('GET', '/api/plugins/')
+    if code != 200 or not isinstance(body, dict):
+        log('the studio did not list its plugins (HTTP %s): %s' % (code, reason(body)))
+        return None
+    return body
+
+
+def plugin_updates():
+    """Installed plugins with a newer compatible release: what the Store's
+    "Update all" button selects. None after printing why it cannot tell."""
+    state = plugins_state()
+    if state is None:
+        return None
+    if state.get('pending_restart'):
+        log('plugin changes are already waiting for a studio restart - apply them first: lds-restart')
+        return None
+    installed = {p['id']: p for p in state.get('plugins') or [] if p.get('id')}
+    if not installed:
+        log('no plugins installed - nothing to update')
+        return []
+    code, catalog = call('GET', '/api/plugins/store/catalog', timeout=300)
+    if code != 200 or not isinstance(catalog, dict):
+        log('the studio did not load the plugin store (HTTP %s): %s' % (code, reason(catalog)))
+        return None
+    if not catalog.get('can_manage'):
+        log('the studio refused the plugin admin token - is LDS_PLUGIN_ADMIN_TOKEN in /etc/lds-vast.env?')
+        return None
+    if not catalog.get('products'):
+        log('the plugin store is %s: %s' % (catalog.get('status'), catalog.get('message') or 'no plugins listed'))
+        return None
+    updates = []
+    for product in catalog['products']:
+        plugin = installed.get(product.get('id'))
+        release = product.get('recommended')
+        if (plugin and product.get('update_available') and release
+                and not release.get('compatibility_issues') and not plugin.get('pending_action')):
+            updates.append((product['id'], plugin.get('name') or (release.get('manifest') or {}).get('name')
+                            or product['id'], plugin.get('installed_version'),
+                            (release.get('manifest') or {}).get('version')))
+    if not updates:
+        log('installed plugins are up to date (%d installed)' % len(installed))
+    return updates
+
+
+def update_plugins():
+    """Update every installed plugin that has a newer compatible release, then
+    restart the studio once - the Store's "Update all and restart"."""
+    updates = plugin_updates()
+    if updates is None:
+        return 2
+    if not updates:
+        return 0
+    for _, name, old, new in updates:
+        log('plugin update: %s %s -> %s' % (name, old, new))
+    csrf = csrf_token()
+    if csrf is None:
+        return 2
+    ids = sorted(pid for pid, _, _, _ in updates)
+    code, plan = call('POST', '/api/plugins/store/plan', csrf, timeout=300,
+                      body={'ids': ids, 'update_only': True})
+    if code != 200 or not isinstance(plan, dict):
+        log('the studio did not prepare the update plan: %s' % reason(plan))
+        return 1
+    for item in plan.get('excluded') or []:
+        log('not updated (members only - needs an active Patreon membership): %s' % item.get('name'))
+    locked = plan.get('patreon_required') or plan.get('purchase_required')
+    if locked:
+        # Only when every update is locked; otherwise the studio lists them in excluded.
+        log('not updated (members only - needs an active Patreon membership): %s' % ', '.join(locked))
+        return 0
+    if not plan.get('packages'):
+        log('nothing to download - installed plugins are up to date')
+        return 0
+    for package in plan['packages']:
+        manifest = package.get('manifest') or {}
+        if package.get('reason') != 'requested':
+            log('  with %s %s (%s)' % (manifest.get('name') or manifest.get('id'), manifest.get('version'),
+                                       package.get('reason')))
+    requested = plan.get('requested')
+    selection = {'ids': requested} if isinstance(requested, list) else {'id': requested}
+    log('downloading and preparing the plugin updates ...')
+    code, prepared = call('POST', '/api/plugins/store/install', csrf, timeout=1800,
+                          body={**selection, 'plan_id': plan.get('plan_id'), 'update_only': True})
+    if code != 200:
+        log('not updated: %s' % reason(prepared))
+        return 1
+    code, applied = call('POST', '/api/plugins/apply', csrf, timeout=120)
+    if code != 200 or not (applied or {}).get('restarting'):
+        log('the updates are downloaded and apply at the next studio restart (%s): lds-restart'
+            % reason(applied))
+        return 1
+    if not wait_for_restart():
+        return 2
+    state = plugins_state() or {}
+    versions = {p.get('id'): p.get('loaded_version') or p.get('installed_version')
+                for p in state.get('plugins') or []}
+    for pid, name, old, new in updates:
+        log('%s: %s' % (name, 'updated to %s' % versions.get(pid) if versions.get(pid) == new
+                        else 'still %s - check Plugins in the studio' % versions.get(pid)))
+    for error in state.get('lifecycle_errors') or []:
+        log('plugin problem: %s' % reason(error))
+    return 0
+
+
 def auto():
     """Every container start (lds-models service): install a newer members release
-    when Patreon is connected with an active membership. Never fails the start."""
+    when Patreon is connected with an active membership, then update the installed
+    plugins. Never fails the start."""
+    if not wait_for_studio():
+        log('the studio did not start - automatic updates skipped')
+        return 0
+    auto_members()
+    if os.environ.get('LDS_PLUGINS_AUTO_UPDATE', '1') != '1':
+        log('plugin auto-update is off (LDS_PLUGINS_AUTO_UPDATE=0)')
+    elif update_plugins() != 0:
+        log('the plugins were not updated automatically - retry by hand: lds-patreon plugins')
+    return 0
+
+
+def auto_members():
     if os.environ.get('LDS_PATREON_AUTO_UPDATE', '1') != '1':
         log('members auto-update is off (LDS_PATREON_AUTO_UPDATE=0)')
         return 0
-    deadline = time.time() + 1800
-    while call('GET', '/api/health', timeout=5)[0] != 200:
-        if time.time() > deadline:
-            log('the studio did not start - members auto-update skipped')
-            return 0
-        time.sleep(10)
     s = status()
     if s is None:
         return 0
@@ -1123,6 +1262,8 @@ def main():
         return install(step_back_allowed='--step-back' in sys.argv[2:])
     if command == 'auto':
         return auto()
+    if command == 'plugins':
+        return update_plugins()
     if command != 'status':
         print(__doc__)
         return 2

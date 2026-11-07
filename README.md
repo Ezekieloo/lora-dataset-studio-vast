@@ -185,7 +185,7 @@ Po każdym starcie instancji zestaw prosi **instalator wbudowany w studio** (ten
 ## Aktualizacje
 
 - **Studio:** aktualizuje się **samo przy każdym starcie instancji** (najnowsza wersja z gałęzi `v2` od autora). Po aktualizacji zestaw doinstalowuje nowe zależności i pobiera modele, których wymaga nowa wersja. W trakcie pracy możesz też użyć *Settings → Update & restart* w studiu. Jeśli wolisz zostać przy danej wersji, ustaw w szablonie `LDS_AUTO_UPDATE=0`.
-- **Wtyczki:** w studiu, *Plugins → Updates*.
+- **Wtyczki:** zainstalowane wtyczki (darmowe i dla patronów) też **aktualizują się same przy każdym starcie**, tak jak po kliknięciu *Update all* w *Plugins → Store*. Nowych wtyczek zestaw sam nie instaluje: wybierasz je w *Plugins → Store*. W trakcie pracy zaktualizujesz je poleceniem `lds-patreon plugins`. Jeśli wolisz robić to ręcznie, ustaw w szablonie `LDS_PLUGINS_AUTO_UPDATE=0`.
 - **Ten zestaw:** nic nie robisz. Szablon wskazuje na najnowszy `provision.sh`, więc nowa instancja pobiera aktualną wersję.
 - **ai-toolkit:** w terminalu `git -C /workspace/ai-toolkit pull && lds-reprovision`.
 - **ComfyUI:** jest kopiowany z obrazu tylko przy pierwszym uruchomieniu na pustym wolumenie. Później aktualizujesz go przez ComfyUI-Manager albo `git -C /workspace/ComfyUI pull`, a potem `comfy-restart`.
@@ -198,13 +198,13 @@ Funkcje opisane na kartach wtyczek jako *Membership features* wymagają **wersji
 2. **Poczekaj, aż skończy się pobieranie modeli** (`lds-status`). Studio nie aktualizuje się, gdy pracuje.
 3. W terminalu: `lds-patreon install`. Studio pobierze i sprawdzi wersję dla patronów, zrestartuje się i po chwili wróci.
    - Jeśli `lds-patreon` pokazuje `blocked - This installation is ahead of the members release`, to publiczna wersja ma już poprawki nowsze niż wydanie dla patronów, a studio samo nie cofa się do starszej wersji. Możesz poczekać na kolejne wydanie albo użyć `lds-patreon install --step-back`. To polecenie cofa studio do publicznej wersji, na której zbudowano wydanie dla patronów, wypisuje odłożone poprawki i instaluje wydanie. Jeśli instalacja się nie uda, wszystko wraca do stanu sprzed polecenia. Odłożone poprawki wrócą z kolejnym wydaniem dla patronów.
-4. W studiu *Plugins → Updates*: zainstaluj nowsze wersje wtyczek dla patronów (znów z odblokowanym tokenem).
+4. W studiu *Plugins → Store* zainstaluj wtyczki dla patronów, których jeszcze nie masz (znów z odblokowanym tokenem). Te, które już masz, zestaw zaktualizuje sam przy starcie poda; od razu zrobisz to poleceniem `lds-patreon plugins`.
 
 Powrót do wersji publicznej (np. gdy coś przestanie działać): `git -C /workspace/lora-dataset-studio fetch -q origin v2 && git -C /workspace/lora-dataset-studio reset -q --hard origin/v2 && lds-restart`. Dane i ustawienia zostają.
 
-**Nowe wydania dla patronów instalują się same przy każdym starcie poda.** Gdy Patreon jest połączony, a członkostwo aktywne, zestaw po uruchomieniu studia sprawdza, czy jest nowsze wydanie. Jeśli jest, instaluje je (w razie potrzeby z `--step-back`), a dopiero potem pobiera modele, których wymaga nowa wersja. Przebieg zobaczysz w `supervisorctl tail lds-models` (linie `[lds-patreon]`). Jeśli instalacja się nie uda, studio działa dalej na dotychczasowej wersji. Wyłączysz to w szablonie zmienną `LDS_PATREON_AUTO_UPDATE=0`.
+**Nowe wydania dla patronów instalują się same przy każdym starcie poda.** Gdy Patreon jest połączony, a członkostwo aktywne, zestaw po uruchomieniu studia sprawdza, czy jest nowsze wydanie. Jeśli jest, instaluje je (w razie potrzeby z `--step-back`). Potem aktualizuje zainstalowane wtyczki, a dopiero na końcu pobiera modele, których wymaga nowa wersja. Przebieg zobaczysz w `supervisorctl tail lds-models` (linie `[lds-patreon]`). Jeśli instalacja się nie uda, studio działa dalej na dotychczasowej wersji. Wyłączysz to w szablonie zmienną `LDS_PATREON_AUTO_UPDATE=0`.
 
-Sam stan sprawdzisz poleceniem `lds-patreon`. Gdy wydanie wyjdzie w trakcie pracy, nie musisz restartować poda: wpisz `lds-patreon install --step-back`.
+Sam stan sprawdzisz poleceniem `lds-patreon`. Gdy wydanie wyjdzie w trakcie pracy, nie musisz restartować poda: wpisz `lds-patreon install --step-back`, a potem `lds-patreon plugins`.
 
 **Multi-subject w Test Studio** (kilka osób z własnymi LoRA na jednym obrazie Krea 2) potrzebuje węzłów **Krea2 Regional** dla ComfyUI. Zestaw instaluje je sam (`LDS_COMFY_NODES`), więc nie musisz ich dodawać przez ComfyUI-Manager. Ich aktualizacje robisz już w ComfyUI-Managerze.
 
@@ -234,7 +234,7 @@ Wpisuj je w **Jupyter Terminal**:
 | `lds-status` | Stan studia, ComfyUI, Ollamy i pobierania modeli, wersja studia, zajętość wolumenu, kosz, pamięć GPU |
 | `lds-models` | Pobiera brakujące modele teraz (np. po wpisaniu kluczy). `lds-models plan` tylko pokazuje, co by pobrał |
 | `lds-token` | Wypisuje *plugin admin token* do instalowania wtyczek |
-| `lds-patreon` | Stan członkostwa Patreon i wersji dla patronów. `lds-patreon install` ją instaluje ([więcej](#patreon-wersja-dla-patronów)) |
+| `lds-patreon` | Stan członkostwa Patreon i wersji dla patronów. `lds-patreon install` ją instaluje, a `lds-patreon plugins` aktualizuje zainstalowane wtyczki ([więcej](#patreon-wersja-dla-patronów)) |
 | `lds-restart` | Restartuje studio |
 | `comfy-restart` | Doinstalowuje zależności węzłów ComfyUI i restartuje ComfyUI |
 | `lds-reprovision` | Ponownie uruchamia instalację (bezpieczne: pomija to, co już jest) |
@@ -338,6 +338,7 @@ Te zmienne możesz dodać do szablonu (`-e NAZWA=wartość`):
 | `LDS_MODELS` | `all` | Które modele pobierać automatycznie: `all`, `generate`, `none` albo lista nazw akcji z Setup oddzielona przecinkami ([szczegóły](#modele-co-pobiera-się-samo)) |
 | `LDS_AUTO_UPDATE` | `1` | `0` = nie aktualizuj studia przy starcie |
 | `LDS_PATREON_AUTO_UPDATE` | `1` | `0` = nie instaluj nowszych wydań dla patronów przy starcie ([więcej](#patreon-wersja-dla-patronów)) |
+| `LDS_PLUGINS_AUTO_UPDATE` | `1` | `0` = nie aktualizuj zainstalowanych wtyczek przy starcie |
 | `LDS_COMFY_NODES` | Krea2 Regional | Dodatkowe paczki węzłów ComfyUI (adresy git oddzielone spacją), które studio każe doinstalować ręcznie. `none` = żadnych |
 | `OPEN_BUTTON_PORT` | `5050` (w szablonie) | `1111` = przycisk **Open** otwiera portal instancji zamiast studia |
 | `HF_TOKEN`, `CIVITAI_API_KEY` | (brak) | Klucze dla modeli, które ich wymagają (tylko w prywatnym szablonie) |
@@ -372,6 +373,7 @@ Układ na wolumenie:
   - czy automat modeli działa przez instalator studia. Test pobiera mały podzbiór (VAE Klein i węzły LanPaint), bo maszyna testowa nie ma miejsca na 140 GB.
   - czy Jupyter (port 8080) i logowanie hasłem działają za proxy z logowaniem. Test uruchamia kontener tak jak RunPod: zwykły Docker ze zmiennymi `VAST_TCP_PORT_*`.
   - czy `lds-patreon` dociera do studia z tokenem administratora (bez członkostwa studio odmawia instalacji, i tego test oczekuje), czy `--step-back` przywraca stan sprzed polecenia i czy aktualizacja przy starcie bez członkostwa grzecznie się pomija;
+  - czy `lds-patreon plugins` podnosi starszą wersję darmowej wtyczki do najnowszej i czy aktualizacja wtyczek wykonuje się przy starcie;
   - czy węzły Krea2 Regional instalują się i ładują w ComfyUI.
 - **Czego test nie sprawdza:**
   - samej instalacji wersji dla patronów, bo wymaga aktywnego członkostwa;
