@@ -179,6 +179,7 @@ Po każdym starcie instancji zestaw prosi **instalator wbudowany w studio** (ten
 - **Nie pobiera się z góry:** modele bazowe do treningu (Z-Image, Krea 2, FLUX). ai-toolkit pobiera je sam przy pierwszym treningu danej rodziny (każda to ok. 20–25 GB) do `/workspace/.hf_home`. Niektóre wymagają tokena Hugging Face.
 - **JoyCaption** (ok. 7 GB) pobiera się przy pierwszym użyciu.
 - Po instalacji nowych węzłów ComfyUI zestaw sam doinstalowuje ich zależności i restartuje ComfyUI.
+- Węzły, które studio każe dodać ręcznie przez ComfyUI-Manager (dziś: **Krea2 Regional** do Multi-subject), zestaw klonuje sam przy instalacji (`LDS_COMFY_NODES`).
 - Log pobierania: `supervisorctl tail -f lds-models` w terminalu. Ponowne uruchomienie: `lds-models`. Podgląd bez pobierania: `lds-models plan`.
 
 ## Aktualizacje
@@ -201,7 +202,11 @@ Funkcje opisane na kartach wtyczek jako *Membership features* wymagają **wersji
 
 Powrót do wersji publicznej (np. gdy coś przestanie działać): `git -C /workspace/lora-dataset-studio fetch -q origin v2 && git -C /workspace/lora-dataset-studio reset -q --hard origin/v2 && lds-restart`. Dane i ustawienia zostają.
 
-Sam stan sprawdzisz poleceniem `lds-patreon`. Automatyczna aktualizacja przy starcie zostawia wersję dla patronów w spokoju, dopóki publiczna wersja jej nie dogoni. Nowsze wydania dla patronów instalujesz tak samo: `lds-patreon install`.
+**Nowe wydania dla patronów instalują się same przy każdym starcie poda.** Gdy Patreon jest połączony, a członkostwo aktywne, zestaw po uruchomieniu studia sprawdza, czy jest nowsze wydanie. Jeśli jest, instaluje je (w razie potrzeby z `--step-back`), a dopiero potem pobiera modele, których wymaga nowa wersja. Przebieg zobaczysz w `supervisorctl tail lds-models` (linie `[lds-patreon]`). Jeśli instalacja się nie uda, studio działa dalej na dotychczasowej wersji. Wyłączysz to w szablonie zmienną `LDS_PATREON_AUTO_UPDATE=0`.
+
+Sam stan sprawdzisz poleceniem `lds-patreon`. Gdy wydanie wyjdzie w trakcie pracy, nie musisz restartować poda: wpisz `lds-patreon install --step-back`.
+
+**Multi-subject w Test Studio** (kilka osób z własnymi LoRA na jednym obrazie Krea 2) potrzebuje węzłów **Krea2 Regional** dla ComfyUI. Zestaw instaluje je sam (`LDS_COMFY_NODES`), więc nie musisz ich dodawać przez ComfyUI-Manager. Ich aktualizacje robisz już w ComfyUI-Managerze.
 
 ## Kopia zapasowa
 
@@ -332,6 +337,8 @@ Te zmienne możesz dodać do szablonu (`-e NAZWA=wartość`):
 |---|---|---|
 | `LDS_MODELS` | `all` | Które modele pobierać automatycznie: `all`, `generate`, `none` albo lista nazw akcji z Setup oddzielona przecinkami ([szczegóły](#modele-co-pobiera-się-samo)) |
 | `LDS_AUTO_UPDATE` | `1` | `0` = nie aktualizuj studia przy starcie |
+| `LDS_PATREON_AUTO_UPDATE` | `1` | `0` = nie instaluj nowszych wydań dla patronów przy starcie ([więcej](#patreon-wersja-dla-patronów)) |
+| `LDS_COMFY_NODES` | Krea2 Regional | Dodatkowe paczki węzłów ComfyUI (adresy git oddzielone spacją), które studio każe doinstalować ręcznie. `none` = żadnych |
 | `OPEN_BUTTON_PORT` | `5050` (w szablonie) | `1111` = przycisk **Open** otwiera portal instancji zamiast studia |
 | `HF_TOKEN`, `CIVITAI_API_KEY` | (brak) | Klucze dla modeli, które ich wymagają (tylko w prywatnym szablonie) |
 | `LDS_REF` | `v2` | Gałąź LoRA Dataset Studio przy pierwszej instalacji |
@@ -364,7 +371,8 @@ Układ na wolumenie:
   - czy automatyczna aktualizacja się wykonuje;
   - czy automat modeli działa przez instalator studia. Test pobiera mały podzbiór (VAE Klein i węzły LanPaint), bo maszyna testowa nie ma miejsca na 140 GB.
   - czy Jupyter (port 8080) i logowanie hasłem działają za proxy z logowaniem. Test uruchamia kontener tak jak RunPod: zwykły Docker ze zmiennymi `VAST_TCP_PORT_*`.
-  - czy `lds-patreon` dociera do studia z tokenem administratora (bez członkostwa studio odmawia instalacji, i tego test oczekuje).
+  - czy `lds-patreon` dociera do studia z tokenem administratora (bez członkostwa studio odmawia instalacji, i tego test oczekuje), czy `--step-back` przywraca stan sprzed polecenia i czy aktualizacja przy starcie bez członkostwa grzecznie się pomija;
+  - czy węzły Krea2 Regional instalują się i ładują w ComfyUI.
 - **Czego test nie sprawdza:**
   - samej instalacji wersji dla patronów, bo wymaga aktywnego członkostwa;
   - samego RunPoda (jego proxy i konsoli);

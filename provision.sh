@@ -44,6 +44,13 @@ LDS_AITK_CPU=${LDS_AITK_CPU:-0}                # 1 = allow ai-toolkit without a 
 #   a,b,c     an explicit list of the studio's Setup action names
 LDS_MODELS=${LDS_MODELS:-all}
 LDS_AUTO_UPDATE=${LDS_AUTO_UPDATE:-1}          # 1 = git pull the studio on every container start
+# 1 = on every start, install a newer Patreon members release (only when Patreon is
+# connected in the studio with an active membership; lds-patreon install --step-back)
+LDS_PATREON_AUTO_UPDATE=${LDS_PATREON_AUTO_UPDATE:-1}
+# ComfyUI node packs the studio asks users to add with ComfyUI-Manager themselves
+# (git URLs, space separated; "none" = skip). Cloned once; update them in the Manager.
+#   Krea2 Regional: Multi-subject in the Test Studio (LDS members)
+LDS_COMFY_NODES=${LDS_COMFY_NODES:-https://github.com/januspluto/ComfyUI-Krea2-Regional}
 
 KIT=$WORKSPACE/.lds
 LDS_DIR=$WORKSPACE/lora-dataset-studio
@@ -308,6 +315,29 @@ PY
 # ---- 7. ComfyUI custom node dependencies --------------------------------------------
 # /venv/main is on the container disk, so packages the nodes on the volume need are
 # gone on a new instance. Reinstall them (torch lines stripped, never swap torch).
+fresh_clone() { rm -rf "$2"; git clone -q "$1" "$2"; }
+
+comfy_extra_nodes() {
+    [[ -d $COMFY_DIR/custom_nodes && $LDS_COMFY_NODES != none ]] || return 0
+    local url dir added=0
+    for url in $LDS_COMFY_NODES; do
+        dir=$COMFY_DIR/custom_nodes/$(basename "${url%.git}")
+        if [[ -d $dir ]]; then
+            log "ComfyUI node pack present: $(basename "$dir")"
+        elif retry 3 fresh_clone "$url" "$dir"; then
+            log "added ComfyUI node pack $(basename "$dir")"
+            added=1
+        else
+            rm -rf "$dir"
+            warn "could not clone $url - add it with ComfyUI-Manager"
+        fi
+    done
+    # A rerun on a live instance: ComfyUI only loads new packs when it starts.
+    if (( added )) && supervisorctl status comfyui 2>/dev/null | grep -q RUNNING; then
+        COMFY_RESTART=1
+    fi
+}
+
 comfy_node_deps() {
     [[ -d $COMFY_DIR/custom_nodes && -x /venv/main/bin/python ]] || return 0
     local req pins=$KIT/comfy-torch-pins.txt
@@ -347,6 +377,7 @@ UV_LINK_MODE=$UV_LINK_MODE
 OLLAMA_DIR=$OLLAMA_DIR
 LDS_MODELS=$LDS_MODELS
 LDS_AUTO_UPDATE=$LDS_AUTO_UPDATE
+LDS_PATREON_AUTO_UPDATE=$LDS_PATREON_AUTO_UPDATE
 EOF
     chmod 600 "$ENV_FILE"
 }
@@ -430,6 +461,9 @@ while [ -f /.provisioning ]; do
 done
 
 set -a; . /etc/lds-vast.env; set +a
+# A newer Patreon members release first (it restarts the studio), so the models
+# below are the ones that version lists.
+"$LDS_DIR/.venv/bin/python" "$LDS_KIT/lib/lds_patreon.py" auto 2>&1 || true
 "$LDS_DIR/.venv/bin/python" "$LDS_KIT/lib/lds_models.py" 2>&1
 EOF
     chmod 755 /opt/supervisor-scripts/lds.sh /opt/supervisor-scripts/lds-ollama.sh /opt/supervisor-scripts/lds-models.sh
@@ -837,6 +871,8 @@ studio API, with the token, from inside the instance.
     lds-patreon                         membership and members release status
     lds-patreon install                 install the members release; the studio then restarts
     lds-patreon install --step-back     same, when the studio is ahead of that release
+    lds-patreon auto                    what every container start runs: install --step-back
+                                        when Patreon is connected and a newer release is out
 
 A members release builds on a public commit. When the public branch has moved on since
 (auto-update follows it), the studio refuses to go back and asks to wait for the next
@@ -993,8 +1029,8 @@ def step_back():
     return None
 
 
-def install(step_back_allowed=False):
-    s = status()
+def install(step_back_allowed=False, s=None):
+    s = s or status()
     if s is None:
         return 2
     report(s)
@@ -1047,10 +1083,45 @@ def apply(s, step_back_hint):
     return 0
 
 
+def auto():
+    """Every container start (lds-models service): install a newer members release
+    when Patreon is connected with an active membership. Never fails the start."""
+    if os.environ.get('LDS_PATREON_AUTO_UPDATE', '1') != '1':
+        log('members auto-update is off (LDS_PATREON_AUTO_UPDATE=0)')
+        return 0
+    deadline = time.time() + 1800
+    while call('GET', '/api/health', timeout=5)[0] != 200:
+        if time.time() > deadline:
+            log('the studio did not start - members auto-update skipped')
+            return 0
+        time.sleep(10)
+    s = status()
+    if s is None:
+        return 0
+    patreon = (s.get('access') or {}).get('patreon') or {}
+    if not patreon.get('linked') or patreon.get('status') != 'active':
+        log('Patreon is not connected with an active membership - members auto-update skipped')
+        return 0
+    if s.get('status') != 'ready':
+        log('members channel %s (%s) - members auto-update skipped'
+            % (s.get('status'), s.get('message') or 'no details'))
+        return 0
+    if not s.get('update_available'):
+        log('members release up to date (%s)' % s.get('current'))
+        return 0
+    log('newer members release: %s -> %s' % (s.get('current'), (s.get('release') or {}).get('version')))
+    if install(step_back_allowed=True, s=s) != 0:
+        log('the members release was not installed automatically - the studio keeps running %s. '
+            'Retry by hand: lds-patreon install --step-back' % s.get('current'))
+    return 0
+
+
 def main():
     command = sys.argv[1] if len(sys.argv) > 1 else 'status'
     if command == 'install':
         return install(step_back_allowed='--step-back' in sys.argv[2:])
+    if command == 'auto':
+        return auto()
     if command != 'status':
         print(__doc__)
         return 2
@@ -1101,11 +1172,13 @@ main() {
     install_aitk
     install_ollama
     seed_config
+    comfy_extra_nodes
     comfy_node_deps
     write_env_file
     write_helpers
     write_services
     ensure_portal_entry
+    [[ ${COMFY_RESTART:-0} == 1 ]] && { log "restarting ComfyUI for the new node packs"; supervisorctl restart comfyui >/dev/null || true; }
     summary
     log "done in $(( (SECONDS - started) / 60 )) min $(( (SECONDS - started) % 60 )) s"
 }
