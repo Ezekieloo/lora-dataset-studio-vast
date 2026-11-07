@@ -332,8 +332,9 @@ comfy_extra_nodes() {
             warn "could not clone $url - add it with ComfyUI-Manager"
         fi
     done
-    # A rerun on a live instance: ComfyUI only loads new packs when it starts.
-    if (( added )) && supervisorctl status comfyui 2>/dev/null | grep -q RUNNING; then
+    # A rerun on a live instance: ComfyUI only loads new packs when it starts. During
+    # the image's own provisioning (/.provisioning) ComfyUI is still waiting to start.
+    if (( added )) && [[ ! -f /.provisioning ]] && supervisorctl status comfyui 2>/dev/null | grep -q RUNNING; then
         COMFY_RESTART=1
     fi
 }

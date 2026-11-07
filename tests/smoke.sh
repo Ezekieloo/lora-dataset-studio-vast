@@ -20,6 +20,9 @@ say()  { echo "::group::$*" 2>/dev/null || true; echo "== $*"; }
 done_group() { echo "::endgroup::" 2>/dev/null || true; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 inside() { docker exec "$NAME" bash -lc "$*"; }
+# grep -q on a pipe stops reading at the first match; under pipefail the writer's
+# SIGPIPE then fails the check. Search a copy instead.
+logs_have() { local logs; logs=$(docker logs "$NAME" 2>&1); grep -q -- "$1" <<<"$logs"; }
 
 wait_for() {  # wait_for <seconds> <description> <command...>
     local limit=$1 what=$2 t=0; shift 2
@@ -152,22 +155,21 @@ say "automatic models through the studio's own Setup installer"
 wait_for 1200 "lds-models job finished" \
     docker exec "$NAME" bash -c 'supervisorctl status lds-models | grep -qE "EXITED|FATAL"'
 docker logs "$NAME" 2>&1 | grep '\[lds-models\]' | tail -20
-docker logs "$NAME" 2>&1 | grep -q '\[lds-models\].*all models are ready' \
-    || fail "lds-models did not finish cleanly"
+logs_have '\[lds-models\].*all models are ready' || fail "lds-models did not finish cleanly"
 inside 'test -s /workspace/ComfyUI/models/vae/flux2-vae.safetensors' || fail "klein_vae was not downloaded"
 inside 'test -d /workspace/ComfyUI/custom_nodes/LanPaint' || fail "LanPaint nodes were not installed"
 wait_for 600 "ComfyUI back after the node restart" docker exec "$NAME" curl -sf http://127.0.0.1:18188/system_stats
 # No Patreon membership in CI: the start-up members update must step aside, not fail.
 docker logs "$NAME" 2>&1 | grep '\[lds-patreon\]' | tail -5
-docker logs "$NAME" 2>&1 | grep -q '\[lds-patreon\].*members auto-update skipped' \
+logs_have '\[lds-patreon\].*members auto-update skipped' \
     || fail "the start-up members update did not run (or did not skip cleanly)"
 done_group
 
 say "extra ComfyUI node packs (Krea2 Regional for Multi-subject)"
 inside 'test -f /workspace/ComfyUI/custom_nodes/ComfyUI-Krea2-Regional/__init__.py' \
     || fail "Krea2 Regional was not cloned"
-inside 'curl -sf http://127.0.0.1:18188/object_info/Krea2ApplyRegional' | grep -q Krea2ApplyRegional \
-    || fail "ComfyUI did not load the Krea2 Regional nodes"
+info=$(inside 'curl -sf http://127.0.0.1:18188/object_info/Krea2ApplyRegional' || true)
+grep -q Krea2ApplyRegional <<<"$info" || fail "ComfyUI did not load the Krea2 Regional nodes"
 echo "ok: Krea2 Regional loaded in ComfyUI"
 done_group
 
