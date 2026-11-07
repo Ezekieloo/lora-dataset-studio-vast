@@ -171,7 +171,7 @@ logs_have '\[lds-patreon\].*\(no plugins installed\|installed plugins are up to 
 if [[ $MODE == first ]]; then
     # An older release of a free plugin, for lds-patreon plugins to bring up to date.
     docker cp "$HERE/tests/store_old_plugin.py" "$NAME:/tmp/store_old_plugin.py"
-    out=$(inside 'set -a; . /etc/lds-vast.env; set +a; "$LDS_DIR/.venv/bin/python" /tmp/store_old_plugin.py') \
+    out=$(inside 'set -a; . /etc/lds-vast.env; set +a; /workspace/lora-dataset-studio/.venv/bin/python /tmp/store_old_plugin.py') \
         || { echo "$out"; fail "could not install an older plugin release to update"; }
     echo "$out"
     picked=$(grep '^PICKED ' <<<"$out" | cut -d' ' -f2- || true)
